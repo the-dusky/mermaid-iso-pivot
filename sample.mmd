@@ -1,0 +1,32 @@
+%%{arch: {view: "iso", nav: "drill"}}%%
+flowchart TD
+    subgraph Frontend["Frontend Services"]
+        subgraph WebApp["Web App"]
+            Auth[Auth Module]
+            UI[UI Components]
+            Auth --> UI
+        end
+        subgraph CDN["CDN / imgproxy"]
+            Cache[(Cache Layer)]
+            Transform[Image Transform]
+            Cache --> Transform
+        end
+        WebApp --> CDN
+    end
+    
+    subgraph Backend["Backend Services"]
+        subgraph API["API Server"]
+            REST[REST API]
+            GraphQL[GraphQL]
+            REST --> GraphQL
+        end
+        subgraph Data["Data Layer"]
+            DB[(PostgreSQL)]
+            Redis[(Redis)]
+            Storage[(Cloud Storage)]
+            DB --> Redis
+        end
+        API --> Data
+    end
+    
+    Frontend --> Backend

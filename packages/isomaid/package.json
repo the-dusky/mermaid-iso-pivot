@@ -1,0 +1,58 @@
+{
+  "name": "isomaid",
+  "version": "0.1.0",
+  "description": "Interactive architecture diagram viewer with isometric rendering and semantic zoom navigation",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
+    "dagre": "^0.8.5",
+    "elkjs": "^0.11.0",
+    "pathfinding": "^0.4.18"
+  },
+  "peerDependencies": {
+    "mermaid": ">=10.0.0"
+  },
+  "devDependencies": {
+    "@types/d3-selection": "^3.0.0",
+    "@types/d3-zoom": "^3.0.0",
+    "@types/dagre": "^0.7.52",
+    "@types/pathfinding": "^0.1.0",
+    "mermaid": "^11.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "keywords": [
+    "mermaid",
+    "diagram",
+    "architecture",
+    "isometric",
+    "svg",
+    "visualization"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/isomaid"
+  }
+}
