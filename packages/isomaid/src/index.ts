@@ -11,6 +11,7 @@ export * from './parser'
 export * from './layout'
 export * from './render'
 export * from './grid'
+export * from './nav/drill'
 
 // Convenience imports for main workflow
 import { parseMermaid } from './parser'

@@ -1,7 +1,17 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { diagram } from 'isomaid'
-import type { ViewMode } from 'isomaid'
+import {
+  parse,
+  render,
+  createInitialNavState,
+  drillInto,
+  drillOut,
+  drillToLevel,
+  getVisibleNodes,
+  getVisibleEdges,
+  getBreadcrumbTrail,
+} from 'isomaid'
+import type { ViewMode, Graph, NavState } from 'isomaid'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
@@ -93,6 +103,8 @@ function DiagramViewer() {
   })
 
   const [svg, setSvg] = useState<string>('')
+  const [graph, setGraph] = useState<Graph | null>(null)
+  const [navState, setNavState] = useState<NavState>(createInitialNavState())
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(VIEW_MODE_STORAGE_KEY)
@@ -225,27 +237,48 @@ function DiagramViewer() {
     isUndoRedoRef.current = false
   }, [source])
 
-  const renderDiagram = useCallback(async (mermaidSource: string) => {
+  // Parse Mermaid source into graph
+  const parseDiagram = useCallback(async (mermaidSource: string) => {
     try {
       setLoading(true)
-      const result = await diagram(mermaidSource, {
-        render: { viewMode, showPorts },
-      })
-      // Success - update SVG and clear all errors
-      setSvg(result)
+      const parsedGraph = await parse(mermaidSource, { viewMode })
+      setGraph(parsedGraph)
+      setNavState(createInitialNavState()) // Reset navigation on new diagram
       setPendingError(null)
       setVisibleError(null)
     } catch (err) {
-      // Silently capture error - keep last good SVG
-      const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
+      const errorMessage = err instanceof Error ? err.message : 'Failed to parse diagram'
       setPendingError(errorMessage)
-      // Don't clear SVG - keep showing last good render
     } finally {
       setLoading(false)
     }
-  }, [viewMode, showPorts])
+  }, [viewMode])
 
-  // Debounced render on source change
+  // Render current view based on navigation state
+  const renderCurrentView = useCallback(() => {
+    if (!graph) return
+
+    try {
+      // Create a filtered view of the graph based on navigation state
+      const visibleNodeIds = getVisibleNodes(graph, navState)
+      const visibleEdges = getVisibleEdges(graph, navState)
+
+      // Create a filtered graph for rendering
+      const filteredGraph: Graph = {
+        ...graph,
+        rootNodes: visibleNodeIds,
+        edges: visibleEdges,
+      }
+
+      const svg = render(filteredGraph, { viewMode, showPorts })
+      setSvg(svg)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
+      setPendingError(errorMessage)
+    }
+  }, [graph, navState, viewMode, showPorts])
+
+  // Debounced parse on source change
   useEffect(() => {
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
@@ -255,7 +288,7 @@ function DiagramViewer() {
     setVisibleError(null)
 
     debounceRef.current = setTimeout(() => {
-      renderDiagram(source)
+      parseDiagram(source)
     }, 300)
 
     return () => {
@@ -263,12 +296,12 @@ function DiagramViewer() {
         clearTimeout(debounceRef.current)
       }
     }
-  }, [source, renderDiagram])
+  }, [source, parseDiagram])
 
-  // Re-render when viewMode or showPorts changes
+  // Re-render when graph, viewMode, showPorts, or navState changes
   useEffect(() => {
-    renderDiagram(source)
-  }, [viewMode, showPorts]) // eslint-disable-line react-hooks/exhaustive-deps
+    renderCurrentView()
+  }, [renderCurrentView])
 
   // Handle Check button - show pending error if any
   const handleCheck = useCallback(() => {
@@ -320,6 +353,48 @@ function DiagramViewer() {
   const handleMouseUp = useCallback(() => {
     setIsResizing(false)
   }, [])
+
+  // Drill navigation handlers
+  const handleDrillInto = useCallback((subgraphId: string) => {
+    if (!graph) return
+    const newNavState = drillInto(graph, navState, subgraphId)
+    setNavState(newNavState)
+  }, [graph, navState])
+
+  const handleDrillOut = useCallback(() => {
+    const newNavState = drillOut(navState)
+    setNavState(newNavState)
+  }, [navState])
+
+  const handleDrillToLevel = useCallback((index: number) => {
+    const newNavState = drillToLevel(navState, index)
+    setNavState(newNavState)
+  }, [navState])
+
+  // Handle clicks on diagram elements for drill navigation
+  const handleDiagramClick = useCallback((e: React.MouseEvent) => {
+    if (!graph) return
+
+    // Find the clicked SVG element
+    const target = e.target as SVGElement
+
+    // Look for a subgraph node by walking up the DOM tree
+    let element: SVGElement | null = target
+    while (element && element.tagName !== 'svg') {
+      if (element.classList?.contains('subgraph') || element.classList?.contains('node')) {
+        const nodeId = element.getAttribute('data-id')
+        if (nodeId) {
+          const node = graph.nodes.get(nodeId)
+          if (node?.isSubgraph) {
+            handleDrillInto(nodeId)
+            e.stopPropagation()
+            return
+          }
+        }
+      }
+      element = element.parentElement as SVGElement | null
+    }
+  }, [graph, handleDrillInto])
 
   useEffect(() => {
     if (isResizing) {
@@ -571,7 +646,28 @@ function DiagramViewer() {
         >
           {/* Diagram Header */}
           <div className="flex-shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
-            <span>Diagram Preview</span>
+            {/* Breadcrumb Navigation */}
+            {graph && navState.breadcrumbs.length > 0 ? (
+              <div className="flex items-center gap-2 text-xs">
+                {getBreadcrumbTrail(graph, navState).map((crumb, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    {index > 0 && <span className="text-gray-600">/</span>}
+                    <button
+                      onClick={() => handleDrillToLevel(index)}
+                      className={`px-2 py-1 rounded ${
+                        index === navState.breadcrumbs.length
+                          ? 'bg-cyan-600 text-white'
+                          : 'hover:bg-slate-700 text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {crumb.label}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span>Diagram Preview</span>
+            )}
             <div className="flex items-center gap-3">
               {loading && <span className="text-cyan-400 text-xs">Rendering...</span>}
 
@@ -654,6 +750,8 @@ function DiagramViewer() {
                   <div
                     dangerouslySetInnerHTML={{ __html: svg }}
                     className="diagram-container"
+                    onClick={handleDiagramClick}
+                    style={{ cursor: 'pointer' }}
                   />
                 </div>
               )}
