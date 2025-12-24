@@ -77,6 +77,70 @@ function shapeToSvg(shape: ShapeResult, extraAttrs: Record<string, string> = {})
 }
 
 /**
+ * Helper to render ports for a node
+ * Works for both flat and iso modes via coordinate transformation
+ */
+type CoordTransform = (x: number, y: number, z: number) => { sx: number; sy: number }
+
+function renderNodePorts(
+  node: Node,
+  opts: Required<RenderOptions>,
+  transform: CoordTransform
+): string {
+  if (!opts.showPorts || !node.ports || node.ports.length === 0) {
+    return ''
+  }
+
+  let portsSvg = ''
+
+  for (const port of node.ports) {
+    // Red corner port (routing waypoint)
+    if (port.cornerX !== undefined && port.cornerY !== undefined) {
+      const pos = transform(port.cornerX, port.cornerY, 0)
+      portsSvg += `<circle
+        cx="${pos.sx}"
+        cy="${pos.sy}"
+        r="4"
+        fill="#ef4444"
+        stroke="#dc2626"
+        stroke-width="1.5"
+        class="port port-corner"
+      />`
+    }
+
+    // Blue far port (extended)
+    if (port.farX !== undefined && port.farY !== undefined) {
+      const pos = transform(port.farX, port.farY, 0)
+      portsSvg += `<circle
+        cx="${pos.sx}"
+        cy="${pos.sy}"
+        r="4"
+        fill="#3b82f6"
+        stroke="#2563eb"
+        stroke-width="1.5"
+        class="port port-far"
+      />`
+    }
+
+    // Green close port (at surface)
+    if (port.closeX !== undefined && port.closeY !== undefined) {
+      const pos = transform(port.closeX, port.closeY, 0)
+      portsSvg += `<circle
+        cx="${pos.sx}"
+        cy="${pos.sy}"
+        r="4"
+        fill="#22c55e"
+        stroke="#16a34a"
+        stroke-width="1.5"
+        class="port port-close"
+      />`
+    }
+  }
+
+  return portsSvg
+}
+
+/**
  * Render a node in flat mode
  */
 function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
@@ -127,56 +191,12 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
     >${escapeHtml(node.label)}</text>`
   }
 
-  // Render ports if enabled - show all three levels
-  let portsSvg = ''
-  if (opts.showPorts && node.ports && node.ports.length > 0) {
-    for (const port of node.ports) {
-      // Red corner port (routing waypoint)
-      if (port.cornerX !== undefined && port.cornerY !== undefined) {
-        const cornerX = port.cornerX - node.x
-        const cornerY = port.cornerY - node.y
-        portsSvg += `<circle
-          cx="${cornerX}"
-          cy="${cornerY}"
-          r="4"
-          fill="#ef4444"
-          stroke="#dc2626"
-          stroke-width="1.5"
-          class="port port-corner"
-        />`
-      }
-
-      // Blue far port (extended)
-      if (port.farX !== undefined && port.farY !== undefined) {
-        const farX = port.farX - node.x
-        const farY = port.farY - node.y
-        portsSvg += `<circle
-          cx="${farX}"
-          cy="${farY}"
-          r="4"
-          fill="#3b82f6"
-          stroke="#2563eb"
-          stroke-width="1.5"
-          class="port port-far"
-        />`
-      }
-
-      // Green close port (at surface)
-      if (port.closeX !== undefined && port.closeY !== undefined) {
-        const closeX = port.closeX - node.x
-        const closeY = port.closeY - node.y
-        portsSvg += `<circle
-          cx="${closeX}"
-          cy="${closeY}"
-          r="4"
-          fill="#22c55e"
-          stroke="#16a34a"
-          stroke-width="1.5"
-          class="port port-close"
-        />`
-      }
-    }
-  }
+  // Render ports - flat mode uses identity transform (relative to node center)
+  const flatTransform: CoordTransform = (x, y, _z) => ({
+    sx: x - node.x!,
+    sy: y - node.y!,
+  })
+  const portsSvg = renderNodePorts(node, opts, flatTransform)
 
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''}"
@@ -267,54 +287,9 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
     >${escapeHtml(node.label)}</text>`
   }
 
-  // Render ports if enabled - show all three levels in isometric space
+  // Render ports - iso mode uses isoProject transform
   // Ports are at Z=0 (flat on the ground)
-  let portsSvg = ''
-  if (opts.showPorts && node.ports && node.ports.length > 0) {
-    for (const port of node.ports) {
-      // Red corner port (routing waypoint)
-      if (port.cornerX !== undefined && port.cornerY !== undefined) {
-        const cornerIso = isoProject(port.cornerX, port.cornerY, 0)
-        portsSvg += `<circle
-          cx="${cornerIso.sx}"
-          cy="${cornerIso.sy}"
-          r="4"
-          fill="#ef4444"
-          stroke="#dc2626"
-          stroke-width="1.5"
-          class="port port-corner"
-        />`
-      }
-
-      // Blue far port (extended)
-      if (port.farX !== undefined && port.farY !== undefined) {
-        const farIso = isoProject(port.farX, port.farY, 0)
-        portsSvg += `<circle
-          cx="${farIso.sx}"
-          cy="${farIso.sy}"
-          r="4"
-          fill="#3b82f6"
-          stroke="#2563eb"
-          stroke-width="1.5"
-          class="port port-far"
-        />`
-      }
-
-      // Green close port (at surface)
-      if (port.closeX !== undefined && port.closeY !== undefined) {
-        const closeIso = isoProject(port.closeX, port.closeY, 0)
-        portsSvg += `<circle
-          cx="${closeIso.sx}"
-          cy="${closeIso.sy}"
-          r="4"
-          fill="#22c55e"
-          stroke="#16a34a"
-          stroke-width="1.5"
-          class="port port-close"
-        />`
-      }
-    }
-  }
+  const portsSvg = renderNodePorts(node, opts, isoProject)
 
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''}"
@@ -328,6 +303,19 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
 }
 
 /**
+ * Get edge style properties (stroke dash, width)
+ */
+function getEdgeStyle(edge: Edge): { strokeDasharray: string; strokeWidth: number } {
+  let strokeDasharray = ''
+  if (edge.style === 'dashed') strokeDasharray = '5,5'
+  else if (edge.style === 'dotted') strokeDasharray = '2,2'
+
+  const strokeWidth = edge.style === 'thick' ? 3 : 1.5
+
+  return { strokeDasharray, strokeWidth }
+}
+
+/**
  * Render an edge in flat mode
  */
 function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: string): string {
@@ -335,11 +323,7 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
     return ''
   }
 
-  let strokeDasharray = ''
-  if (edge.style === 'dashed') strokeDasharray = '5,5'
-  else if (edge.style === 'dotted') strokeDasharray = '2,2'
-
-  const strokeWidth = edge.style === 'thick' ? 3 : 1.5
+  const { strokeDasharray, strokeWidth } = getEdgeStyle(edge)
   const hasArrow = edge.toArrow !== 'none'
 
   // Arrow dimensions
@@ -545,11 +529,7 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.sx} ${p.sy}`)
     .join(' ')
 
-  let strokeDasharray = ''
-  if (edge.style === 'dashed') strokeDasharray = '5,5'
-  else if (edge.style === 'dotted') strokeDasharray = '2,2'
-
-  const strokeWidth = edge.style === 'thick' ? 3 : 1.5
+  const { strokeDasharray, strokeWidth } = getEdgeStyle(edge)
 
   let svg = `<path
     class="edge iso-edge"
