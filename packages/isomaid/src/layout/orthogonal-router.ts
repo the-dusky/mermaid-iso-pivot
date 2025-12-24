@@ -194,13 +194,14 @@ function getConnectionPoints(
   const fromPort = getBestPortOnSide(fromNode, fromSide, tx, ty, graph)
   const toPort = getBestPortOnSide(toNode, toSide, fx, fy, graph)
 
-  // Use port positions if available, otherwise fallback to calculated edge points
+  // Use CORNER (red) ports for routing - these are the outermost waypoints
+  // Rendering will add segments: red → blue → green for visual connection to node surface
   let fromX: number, fromY: number
   let toX: number, toY: number
 
-  if (fromPort && fromPort.x !== undefined && fromPort.y !== undefined) {
-    fromX = fromPort.x
-    fromY = fromPort.y
+  if (fromPort && fromPort.cornerX !== undefined && fromPort.cornerY !== undefined) {
+    fromX = fromPort.cornerX
+    fromY = fromPort.cornerY
   } else {
     // Fallback: calculate edge point
     const hw = (fromNode.width || 100) / 2
@@ -213,9 +214,9 @@ function getConnectionPoints(
     }
   }
 
-  if (toPort && toPort.x !== undefined && toPort.y !== undefined) {
-    toX = toPort.x
-    toY = toPort.y
+  if (toPort && toPort.cornerX !== undefined && toPort.cornerY !== undefined) {
+    toX = toPort.cornerX
+    toY = toPort.cornerY
   } else {
     // Fallback: calculate edge point
     const hw = (toNode.width || 100) / 2
@@ -228,7 +229,7 @@ function getConnectionPoints(
     }
   }
 
-  // With ports, the port position IS the waypoint (ports are already offset from node)
+  // Routing uses corner positions as both endpoints and waypoints
   return {
     from: { x: fromX, y: fromY, side: fromSide, waypoint: { x: fromX, y: fromY } },
     to: { x: toX, y: toY, side: toSide, waypoint: { x: toX, y: toY } },

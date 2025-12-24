@@ -35,6 +35,8 @@ export interface RenderOptions {
   fontSize?: number
   /** Show grid in isometric mode */
   showGrid?: boolean
+  /** Show port indicators on nodes */
+  showPorts?: boolean
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -47,6 +49,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   fontFamily: 'system-ui, sans-serif',
   fontSize: 14,
   showGrid: true,
+  showPorts: true,
 }
 
 // Z-height for isometric node extrusion
@@ -124,6 +127,57 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
     >${escapeHtml(node.label)}</text>`
   }
 
+  // Render ports if enabled - show all three levels
+  let portsSvg = ''
+  if (opts.showPorts && node.ports && node.ports.length > 0) {
+    for (const port of node.ports) {
+      // Red corner port (routing waypoint)
+      if (port.cornerX !== undefined && port.cornerY !== undefined) {
+        const cornerX = port.cornerX - node.x
+        const cornerY = port.cornerY - node.y
+        portsSvg += `<circle
+          cx="${cornerX}"
+          cy="${cornerY}"
+          r="4"
+          fill="#ef4444"
+          stroke="#dc2626"
+          stroke-width="1.5"
+          class="port port-corner"
+        />`
+      }
+
+      // Blue far port (extended)
+      if (port.farX !== undefined && port.farY !== undefined) {
+        const farX = port.farX - node.x
+        const farY = port.farY - node.y
+        portsSvg += `<circle
+          cx="${farX}"
+          cy="${farY}"
+          r="4"
+          fill="#3b82f6"
+          stroke="#2563eb"
+          stroke-width="1.5"
+          class="port port-far"
+        />`
+      }
+
+      // Green close port (at surface)
+      if (port.closeX !== undefined && port.closeY !== undefined) {
+        const closeX = port.closeX - node.x
+        const closeY = port.closeY - node.y
+        portsSvg += `<circle
+          cx="${closeX}"
+          cy="${closeY}"
+          r="4"
+          fill="#22c55e"
+          stroke="#16a34a"
+          stroke-width="1.5"
+          class="port port-close"
+        />`
+      }
+    }
+  }
+
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''}"
     data-id="${node.id}"
@@ -132,6 +186,7 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
   >
     ${shapeSvg}
     ${textSvg}
+    ${portsSvg}
   </g>`
 }
 
@@ -212,6 +267,55 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
     >${escapeHtml(node.label)}</text>`
   }
 
+  // Render ports if enabled - show all three levels in isometric space
+  // Ports are at Z=0 (flat on the ground)
+  let portsSvg = ''
+  if (opts.showPorts && node.ports && node.ports.length > 0) {
+    for (const port of node.ports) {
+      // Red corner port (routing waypoint)
+      if (port.cornerX !== undefined && port.cornerY !== undefined) {
+        const cornerIso = isoProject(port.cornerX, port.cornerY, 0)
+        portsSvg += `<circle
+          cx="${cornerIso.sx}"
+          cy="${cornerIso.sy}"
+          r="4"
+          fill="#ef4444"
+          stroke="#dc2626"
+          stroke-width="1.5"
+          class="port port-corner"
+        />`
+      }
+
+      // Blue far port (extended)
+      if (port.farX !== undefined && port.farY !== undefined) {
+        const farIso = isoProject(port.farX, port.farY, 0)
+        portsSvg += `<circle
+          cx="${farIso.sx}"
+          cy="${farIso.sy}"
+          r="4"
+          fill="#3b82f6"
+          stroke="#2563eb"
+          stroke-width="1.5"
+          class="port port-far"
+        />`
+      }
+
+      // Green close port (at surface)
+      if (port.closeX !== undefined && port.closeY !== undefined) {
+        const closeIso = isoProject(port.closeX, port.closeY, 0)
+        portsSvg += `<circle
+          cx="${closeIso.sx}"
+          cy="${closeIso.sy}"
+          r="4"
+          fill="#22c55e"
+          stroke="#16a34a"
+          stroke-width="1.5"
+          class="port port-close"
+        />`
+      }
+    }
+  }
+
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''}"
     data-id="${node.id}"
@@ -219,6 +323,7 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
   >
     ${facesSvg}
     ${textSvg}
+    ${portsSvg}
   </g>`
 }
 
@@ -363,9 +468,9 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
     return ''
   }
 
-  // Project edge points to isometric at center height of boxes
-  // This aligns arrows with the middle of side faces, not the top edge
-  const edgeZ = ISO_Z_HEIGHT / 2
+  // Project edge points to isometric at ground level (Z=0)
+  // This matches the port positions which are also at Z=0
+  const edgeZ = 0
 
   // Arrow dimensions
   const arrowLen = 12
