@@ -82,10 +82,67 @@ function shapeToSvg(shape: ShapeResult, extraAttrs: Record<string, string> = {})
  */
 type CoordTransform = (x: number, y: number, z: number) => { sx: number; sy: number }
 
+interface PortUsage {
+  usedPorts: Set<string>  // port keys that have edges connected
+  isTargetNode: boolean    // whether this node is a target of any edge
+}
+
+/**
+ * Calculate which ports are used by edges
+ */
+function calculatePortUsage(node: Node, edges: Edge[]): PortUsage {
+  const usedPorts = new Set<string>()
+  let isTargetNode = false
+
+  for (const edge of edges) {
+    // Check if this node is a source (outgoing edge)
+    if (edge.from === node.id && edge.points && edge.points.length > 0) {
+      const firstPoint = edge.points[0]
+      // Find the port closest to the first edge point (source port)
+      if (node.ports) {
+        for (const port of node.ports) {
+          if (port.cornerX !== undefined && port.cornerY !== undefined) {
+            const dist = Math.hypot(port.cornerX - firstPoint.x, port.cornerY - firstPoint.y)
+            if (dist < 1) { // Tolerance for floating point comparison
+              const portKey = `${port.nodeId}:${port.cornerX},${port.cornerY}`
+              usedPorts.add(portKey)
+              break
+            }
+          }
+        }
+      }
+    }
+
+    // Check if this node is a target (incoming edge)
+    if (edge.to === node.id) {
+      isTargetNode = true
+      if (edge.points && edge.points.length > 0) {
+        const lastPoint = edge.points[edge.points.length - 1]
+        // Find the port closest to the last edge point (target port)
+        if (node.ports) {
+          for (const port of node.ports) {
+            if (port.cornerX !== undefined && port.cornerY !== undefined) {
+              const dist = Math.hypot(port.cornerX - lastPoint.x, port.cornerY - lastPoint.y)
+              if (dist < 1) { // Tolerance for floating point comparison
+                const portKey = `${port.nodeId}:${port.cornerX},${port.cornerY}`
+                usedPorts.add(portKey)
+                break
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { usedPorts, isTargetNode }
+}
+
 function renderNodePorts(
   node: Node,
   opts: Required<RenderOptions>,
-  transform: CoordTransform
+  transform: CoordTransform,
+  usage: PortUsage
 ): string {
   if (!node.ports || node.ports.length === 0) {
     return ''
@@ -96,6 +153,10 @@ function renderNodePorts(
 
   for (const port of node.ports) {
     const side = port.side || 'R'
+
+    // Create a unique key for this port (using corner position)
+    const portKey = `${port.nodeId}:${port.cornerX},${port.cornerY}`
+    const isPortUsed = usage.usedPorts.has(portKey)
 
     // Get transformed positions
     const cornerPos = port.cornerX !== undefined && port.cornerY !== undefined
@@ -108,14 +169,14 @@ function renderNodePorts(
       ? transform(port.closeX, port.closeY, 0)
       : null
 
-    // Draw connection lines (always visible, same color as edges)
+    // Draw connection lines (only if port is used by an edge)
     // Flat mode: All sides uniform (corner → far → close, arrow at close)
     // Iso mode: Top/Left (corner → far, arrow at far), Right/Bottom (corner → far → close, arrow at close)
     const useShortConnection = isIso && (side === 'T' || side === 'L')
 
-    if (useShortConnection) {
+    if (isPortUsed && useShortConnection) {
       // Top and Left in iso: line from corner to far, arrow at far
-      if (cornerPos && farPos) {
+      if (cornerPos && farPos && port.cornerX !== undefined && port.cornerY !== undefined && port.farX !== undefined && port.farY !== undefined) {
         portsSvg += `<line
           x1="${cornerPos.sx}"
           y1="${cornerPos.sy}"
@@ -126,30 +187,48 @@ function renderNodePorts(
           class="port-connection"
         />`
 
-        // Arrow at far position - extend tip beyond line endpoint
-        const dx = farPos.sx - cornerPos.sx
-        const dy = farPos.sy - cornerPos.sy
-        const len = Math.sqrt(dx * dx + dy * dy)
-        if (len > 0) {
-          const nx = dx / len
-          const ny = dy / len
-          const px = -ny
-          const py = nx
-          const arrowSize = 4
-          const arrowExtend = 3  // Extend tip beyond line
+        // Arrow at far position - only if this is a target node
+        if (usage.isTargetNode) {
+          // Calculate direction in world space (before projection)
+          const dx = port.farX - port.cornerX
+          const dy = port.farY - port.cornerY
+          const len = Math.sqrt(dx * dx + dy * dy)
+          if (len > 0) {
+            const nx = dx / len
+            const ny = dy / len
+            const px = -ny
+            const py = nx
+            const arrowSize = 4
+            const arrowExtend = 3  // Extend tip beyond line
 
-          // Arrow tip extends beyond the line endpoint
-          const tipX = farPos.sx + nx * arrowExtend
-          const tipY = farPos.sy + ny * arrowExtend
+            // Create arrow vertices in world space
+            const tip3D = {
+              x: port.farX + nx * arrowExtend,
+              y: port.farY + ny * arrowExtend,
+            }
+            const left3D = {
+              x: port.farX - nx * arrowSize + px * arrowSize,
+              y: port.farY - ny * arrowSize + py * arrowSize,
+            }
+            const right3D = {
+              x: port.farX - nx * arrowSize - px * arrowSize,
+              y: port.farY - ny * arrowSize - py * arrowSize,
+            }
 
-          portsSvg += `<polygon
-            points="${tipX},${tipY} ${farPos.sx - nx * arrowSize + px * arrowSize},${farPos.sy - ny * arrowSize + py * arrowSize} ${farPos.sx - nx * arrowSize - px * arrowSize},${farPos.sy - ny * arrowSize - py * arrowSize}"
-            fill="${opts.edgeStroke}"
-            class="port-arrow"
-          />`
+            // Project each vertex
+            const tipPos = transform(tip3D.x, tip3D.y, 0)
+            const leftPos = transform(left3D.x, left3D.y, 0)
+            const rightPos = transform(right3D.x, right3D.y, 0)
+
+            portsSvg += `<polygon
+              points="${tipPos.sx},${tipPos.sy} ${leftPos.sx},${leftPos.sy} ${rightPos.sx},${rightPos.sy}"
+              fill="${opts.edgeStroke}"
+              class="port-arrow"
+            />`
+          }
         }
       }
-    } else {
+    } else if (isPortUsed) {
       // All other cases: line from corner to far to close, arrow at close
       if (cornerPos && farPos && closePos) {
         // Line: corner → far → close (single continuous path)
@@ -161,27 +240,44 @@ function renderNodePorts(
           class="port-connection"
         />`
 
-        // Arrow at close position - extend tip beyond line endpoint
-        const dx = closePos.sx - farPos.sx
-        const dy = closePos.sy - farPos.sy
-        const len = Math.sqrt(dx * dx + dy * dy)
-        if (len > 0) {
-          const nx = dx / len
-          const ny = dy / len
-          const px = -ny
-          const py = nx
-          const arrowSize = 4
-          const arrowExtend = 3  // Extend tip beyond line
+        // Arrow at close position - only if this is a target node
+        if (usage.isTargetNode && port.closeX !== undefined && port.closeY !== undefined && port.farX !== undefined && port.farY !== undefined) {
+          const dx = port.closeX - port.farX
+          const dy = port.closeY - port.farY
+          const len = Math.sqrt(dx * dx + dy * dy)
+          if (len > 0) {
+            const nx = dx / len
+            const ny = dy / len
+            const px = -ny
+            const py = nx
+            const arrowSize = 4
+            const arrowExtend = 3  // Extend tip beyond line
 
-          // Arrow tip extends beyond the line endpoint
-          const tipX = closePos.sx + nx * arrowExtend
-          const tipY = closePos.sy + ny * arrowExtend
+            // Create arrow vertices in world space
+            const tip3D = {
+              x: port.closeX + nx * arrowExtend,
+              y: port.closeY + ny * arrowExtend,
+            }
+            const left3D = {
+              x: port.closeX - nx * arrowSize + px * arrowSize,
+              y: port.closeY - ny * arrowSize + py * arrowSize,
+            }
+            const right3D = {
+              x: port.closeX - nx * arrowSize - px * arrowSize,
+              y: port.closeY - ny * arrowSize - py * arrowSize,
+            }
 
-          portsSvg += `<polygon
-            points="${tipX},${tipY} ${closePos.sx - nx * arrowSize + px * arrowSize},${closePos.sy - ny * arrowSize + py * arrowSize} ${closePos.sx - nx * arrowSize - px * arrowSize},${closePos.sy - ny * arrowSize - py * arrowSize}"
-            fill="${opts.edgeStroke}"
-            class="port-arrow"
-          />`
+            // Project each vertex
+            const tipPos = transform(tip3D.x, tip3D.y, 0)
+            const leftPos = transform(left3D.x, left3D.y, 0)
+            const rightPos = transform(right3D.x, right3D.y, 0)
+
+            portsSvg += `<polygon
+              points="${tipPos.sx},${tipPos.sy} ${leftPos.sx},${leftPos.sy} ${rightPos.sx},${rightPos.sy}"
+              fill="${opts.edgeStroke}"
+              class="port-arrow"
+            />`
+          }
         }
       }
     }
@@ -235,7 +331,7 @@ function renderNodePorts(
 /**
  * Render a node in flat mode
  */
-function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
+function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]): string {
   if (node.x === undefined || node.y === undefined) {
     console.warn(`Node ${node.id} has no position`)
     return ''
@@ -288,7 +384,8 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
     sx: x - node.x!,
     sy: y - node.y!,
   })
-  const portsSvg = renderNodePorts(node, opts, flatTransform)
+  const portUsage = calculatePortUsage(node, edges)
+  const portsSvg = renderNodePorts(node, opts, flatTransform, portUsage)
 
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''}"
@@ -305,7 +402,7 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>): string {
 /**
  * Render a node in isometric mode as a 3D box
  */
-function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
+function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]): string {
   if (node.x === undefined || node.y === undefined) {
     console.warn(`Node ${node.id} has no position`)
     return ''
@@ -381,7 +478,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>): string {
 
   // Render ports - iso mode uses isoProject transform
   // Ports are at Z=0 (flat on the ground)
-  const portsSvg = renderNodePorts(node, opts, isoProject)
+  const portUsage = calculatePortUsage(node, edges)
+  const portsSvg = renderNodePorts(node, opts, isoProject, portUsage)
 
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''}"
@@ -813,9 +911,9 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? generateFlatGrid(bounds.width + 100, bounds.height + 100, 40)
     : ''
 
-  const subgraphsSvg = subgraphs.map(n => renderFlatNode(n, opts)).join('\n')
+  const subgraphsSvg = subgraphs.map(n => renderFlatNode(n, opts, graph.edges)).join('\n')
   const edgesSvg = graph.edges.map(e => renderFlatEdge(e, opts)).join('\n')
-  const nodesSvg = regularNodes.map(n => renderFlatNode(n, opts)).join('\n')
+  const nodesSvg = regularNodes.map(n => renderFlatNode(n, opts, graph.edges)).join('\n')
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -889,9 +987,9 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     : ''
 
   // Render elements
-  const subgraphsSvg = subgraphs.map(n => renderIsoNode(n, opts)).join('\n')
+  const subgraphsSvg = subgraphs.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
   const edgesSvg = graph.edges.map(e => renderIsoEdge(e, opts)).join('\n')
-  const nodesSvg = regularNodes.map(n => renderIsoNode(n, opts)).join('\n')
+  const nodesSvg = regularNodes.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
