@@ -92,6 +92,7 @@ function renderNodePorts(
   }
 
   let portsSvg = ''
+  const isIso = opts.viewMode === 'iso'
 
   for (const port of node.ports) {
     const side = port.side || 'R'
@@ -107,10 +108,12 @@ function renderNodePorts(
       ? transform(port.closeX, port.closeY, 0)
       : null
 
-    // Draw connection lines based on side
-    // Top (T) and Left (L): corner → far with arrow at far
-    // Right (R) and Bottom (B): corner → far → close with arrow at close
-    if (side === 'T' || side === 'L') {
+    // Draw connection lines based on side and view mode
+    // Flat mode: All sides uniform (corner → far → close, arrow at close)
+    // Iso mode: Top/Left (corner → far, arrow at far), Right/Bottom (corner → far → close, arrow at close)
+    const useShortConnection = isIso && (side === 'T' || side === 'L')
+
+    if (useShortConnection) {
       // Top and Left: line from red to blue, arrow at blue
       if (cornerPos && farPos) {
         portsSvg += `<line
