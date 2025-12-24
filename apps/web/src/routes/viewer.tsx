@@ -218,26 +218,34 @@ function DiagramViewer() {
     if (!graph) return
 
     try {
-      // At root level, render entire graph. When drilled in, filter to visible nodes/edges.
-      if (navState.currentRoot === null) {
-        // Root level - show entire graph as-is
-        const svg = render(graph, { viewMode, showPorts })
-        setSvg(svg)
-      } else {
-        // Drilled into a subgraph - show only its children
-        const visibleNodeIds = getVisibleNodes(graph, navState)
-        const visibleEdges = getVisibleEdges(graph, navState)
+      // Always filter to show only nodes at the current drill level
+      // Subgraphs appear as collapsed nodes unless drilled into
+      const visibleNodeIds = getVisibleNodes(graph, navState)
+      const visibleEdges = getVisibleEdges(graph, navState)
 
-        // Create a filtered graph for rendering
-        const filteredGraph: Graph = {
-          ...graph,
-          rootNodes: visibleNodeIds,
-          edges: visibleEdges,
+      // Filter the nodes map to only include visible nodes
+      const filteredNodes = new Map()
+      for (const nodeId of visibleNodeIds) {
+        const node = graph.nodes.get(nodeId)
+        if (node) {
+          // Remove children from subgraphs to render them as collapsed
+          filteredNodes.set(nodeId, {
+            ...node,
+            children: [], // Don't show children - they'll be shown when drilled into
+          })
         }
-
-        const svg = render(filteredGraph, { viewMode, showPorts })
-        setSvg(svg)
       }
+
+      // Create a filtered graph for rendering
+      const filteredGraph: Graph = {
+        ...graph,
+        nodes: filteredNodes,
+        rootNodes: visibleNodeIds,
+        edges: visibleEdges,
+      }
+
+      const svg = render(filteredGraph, { viewMode, showPorts })
+      setSvg(svg)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
       setPendingError(errorMessage)
