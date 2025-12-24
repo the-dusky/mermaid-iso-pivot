@@ -87,7 +87,7 @@ function renderNodePorts(
   opts: Required<RenderOptions>,
   transform: CoordTransform
 ): string {
-  if (!opts.showPorts || !node.ports || node.ports.length === 0) {
+  if (!node.ports || node.ports.length === 0) {
     return ''
   }
 
@@ -108,25 +108,25 @@ function renderNodePorts(
       ? transform(port.closeX, port.closeY, 0)
       : null
 
-    // Draw connection lines based on side and view mode
+    // Draw connection lines (always visible, black color)
     // Flat mode: All sides uniform (corner → far → close, arrow at close)
     // Iso mode: Top/Left (corner → far, arrow at far), Right/Bottom (corner → far → close, arrow at close)
     const useShortConnection = isIso && (side === 'T' || side === 'L')
 
     if (useShortConnection) {
-      // Top and Left: line from red to blue, arrow at blue
+      // Top and Left in iso: line from corner to far, arrow at far
       if (cornerPos && farPos) {
         portsSvg += `<line
           x1="${cornerPos.sx}"
           y1="${cornerPos.sy}"
           x2="${farPos.sx}"
           y2="${farPos.sy}"
-          stroke="#3b82f6"
-          stroke-width="2"
+          stroke="#000000"
+          stroke-width="1.5"
           class="port-connection"
         />`
 
-        // Arrow at blue (far) position
+        // Arrow at far position
         const dx = farPos.sx - cornerPos.sx
         const dy = farPos.sy - cornerPos.sy
         const len = Math.sqrt(dx * dx + dy * dy)
@@ -139,37 +139,24 @@ function renderNodePorts(
 
           portsSvg += `<polygon
             points="${farPos.sx},${farPos.sy} ${farPos.sx - nx * arrowSize + px * arrowSize},${farPos.sy - ny * arrowSize + py * arrowSize} ${farPos.sx - nx * arrowSize - px * arrowSize},${farPos.sy - ny * arrowSize - py * arrowSize}"
-            fill="#3b82f6"
+            fill="#000000"
             class="port-arrow"
           />`
         }
       }
     } else {
-      // Right and Bottom: line from red to blue to green, arrow at green
+      // All other cases: line from corner to far to close, arrow at close
       if (cornerPos && farPos && closePos) {
-        // Line: corner → far
-        portsSvg += `<line
-          x1="${cornerPos.sx}"
-          y1="${cornerPos.sy}"
-          x2="${farPos.sx}"
-          y2="${farPos.sy}"
-          stroke="#3b82f6"
-          stroke-width="2"
+        // Line: corner → far → close (single continuous path)
+        portsSvg += `<polyline
+          points="${cornerPos.sx},${cornerPos.sy} ${farPos.sx},${farPos.sy} ${closePos.sx},${closePos.sy}"
+          fill="none"
+          stroke="#000000"
+          stroke-width="1.5"
           class="port-connection"
         />`
 
-        // Line: far → close
-        portsSvg += `<line
-          x1="${farPos.sx}"
-          y1="${farPos.sy}"
-          x2="${closePos.sx}"
-          y2="${closePos.sy}"
-          stroke="#22c55e"
-          stroke-width="2"
-          class="port-connection"
-        />`
-
-        // Arrow at green (close) position
+        // Arrow at close position
         const dx = closePos.sx - farPos.sx
         const dy = closePos.sy - farPos.sy
         const len = Math.sqrt(dx * dx + dy * dy)
@@ -182,50 +169,53 @@ function renderNodePorts(
 
           portsSvg += `<polygon
             points="${closePos.sx},${closePos.sy} ${closePos.sx - nx * arrowSize + px * arrowSize},${closePos.sy - ny * arrowSize + py * arrowSize} ${closePos.sx - nx * arrowSize - px * arrowSize},${closePos.sy - ny * arrowSize - py * arrowSize}"
-            fill="#22c55e"
+            fill="#000000"
             class="port-arrow"
           />`
         }
       }
     }
 
-    // Red corner port (routing waypoint)
-    if (cornerPos) {
-      portsSvg += `<circle
-        cx="${cornerPos.sx}"
-        cy="${cornerPos.sy}"
-        r="4"
-        fill="#ef4444"
-        stroke="#dc2626"
-        stroke-width="1.5"
-        class="port port-corner"
-      />`
-    }
+    // Port circles - only show when showPorts is enabled
+    if (opts.showPorts) {
+      // Red corner port (routing waypoint)
+      if (cornerPos) {
+        portsSvg += `<circle
+          cx="${cornerPos.sx}"
+          cy="${cornerPos.sy}"
+          r="4"
+          fill="#ef4444"
+          stroke="#dc2626"
+          stroke-width="1.5"
+          class="port port-corner"
+        />`
+      }
 
-    // Blue far port (extended)
-    if (farPos) {
-      portsSvg += `<circle
-        cx="${farPos.sx}"
-        cy="${farPos.sy}"
-        r="4"
-        fill="#3b82f6"
-        stroke="#2563eb"
-        stroke-width="1.5"
-        class="port port-far"
-      />`
-    }
+      // Blue far port (extended)
+      if (farPos) {
+        portsSvg += `<circle
+          cx="${farPos.sx}"
+          cy="${farPos.sy}"
+          r="4"
+          fill="#3b82f6"
+          stroke="#2563eb"
+          stroke-width="1.5"
+          class="port port-far"
+        />`
+      }
 
-    // Green close port (at surface)
-    if (closePos) {
-      portsSvg += `<circle
-        cx="${closePos.sx}"
-        cy="${closePos.sy}"
-        r="4"
-        fill="#22c55e"
-        stroke="#16a34a"
-        stroke-width="1.5"
-        class="port port-close"
-      />`
+      // Green close port (at surface)
+      if (closePos) {
+        portsSvg += `<circle
+          cx="${closePos.sx}"
+          cy="${closePos.sy}"
+          r="4"
+          fill="#22c55e"
+          stroke="#16a34a"
+          stroke-width="1.5"
+          class="port port-close"
+        />`
+      }
     }
   }
 
