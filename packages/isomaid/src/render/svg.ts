@@ -108,7 +108,7 @@ function renderNodePorts(
       ? transform(port.closeX, port.closeY, 0)
       : null
 
-    // Draw connection lines (always visible, black color)
+    // Draw connection lines (always visible, same color as edges)
     // Flat mode: All sides uniform (corner → far → close, arrow at close)
     // Iso mode: Top/Left (corner → far, arrow at far), Right/Bottom (corner → far → close, arrow at close)
     const useShortConnection = isIso && (side === 'T' || side === 'L')
@@ -121,12 +121,12 @@ function renderNodePorts(
           y1="${cornerPos.sy}"
           x2="${farPos.sx}"
           y2="${farPos.sy}"
-          stroke="#000000"
+          stroke="${opts.edgeStroke}"
           stroke-width="1.5"
           class="port-connection"
         />`
 
-        // Arrow at far position
+        // Arrow at far position - extend tip beyond line endpoint
         const dx = farPos.sx - cornerPos.sx
         const dy = farPos.sy - cornerPos.sy
         const len = Math.sqrt(dx * dx + dy * dy)
@@ -136,10 +136,15 @@ function renderNodePorts(
           const px = -ny
           const py = nx
           const arrowSize = 4
+          const arrowExtend = 3  // Extend tip beyond line
+
+          // Arrow tip extends beyond the line endpoint
+          const tipX = farPos.sx + nx * arrowExtend
+          const tipY = farPos.sy + ny * arrowExtend
 
           portsSvg += `<polygon
-            points="${farPos.sx},${farPos.sy} ${farPos.sx - nx * arrowSize + px * arrowSize},${farPos.sy - ny * arrowSize + py * arrowSize} ${farPos.sx - nx * arrowSize - px * arrowSize},${farPos.sy - ny * arrowSize - py * arrowSize}"
-            fill="#000000"
+            points="${tipX},${tipY} ${farPos.sx - nx * arrowSize + px * arrowSize},${farPos.sy - ny * arrowSize + py * arrowSize} ${farPos.sx - nx * arrowSize - px * arrowSize},${farPos.sy - ny * arrowSize - py * arrowSize}"
+            fill="${opts.edgeStroke}"
             class="port-arrow"
           />`
         }
@@ -151,12 +156,12 @@ function renderNodePorts(
         portsSvg += `<polyline
           points="${cornerPos.sx},${cornerPos.sy} ${farPos.sx},${farPos.sy} ${closePos.sx},${closePos.sy}"
           fill="none"
-          stroke="#000000"
+          stroke="${opts.edgeStroke}"
           stroke-width="1.5"
           class="port-connection"
         />`
 
-        // Arrow at close position
+        // Arrow at close position - extend tip beyond line endpoint
         const dx = closePos.sx - farPos.sx
         const dy = closePos.sy - farPos.sy
         const len = Math.sqrt(dx * dx + dy * dy)
@@ -166,10 +171,15 @@ function renderNodePorts(
           const px = -ny
           const py = nx
           const arrowSize = 4
+          const arrowExtend = 3  // Extend tip beyond line
+
+          // Arrow tip extends beyond the line endpoint
+          const tipX = closePos.sx + nx * arrowExtend
+          const tipY = closePos.sy + ny * arrowExtend
 
           portsSvg += `<polygon
-            points="${closePos.sx},${closePos.sy} ${closePos.sx - nx * arrowSize + px * arrowSize},${closePos.sy - ny * arrowSize + py * arrowSize} ${closePos.sx - nx * arrowSize - px * arrowSize},${closePos.sy - ny * arrowSize - py * arrowSize}"
-            fill="#000000"
+            points="${tipX},${tipY} ${closePos.sx - nx * arrowSize + px * arrowSize},${closePos.sy - ny * arrowSize + py * arrowSize} ${closePos.sx - nx * arrowSize - px * arrowSize},${closePos.sy - ny * arrowSize - py * arrowSize}"
+            fill="${opts.edgeStroke}"
             class="port-arrow"
           />`
         }
