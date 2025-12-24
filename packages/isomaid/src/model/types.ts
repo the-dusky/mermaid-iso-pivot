@@ -46,6 +46,18 @@ export interface Port {
   side: PortSide       // Which edge of the node
   nodeId: string       // Owner node
   edgeId?: string      // Edge using this port (for allocation tracking)
+
+  // Three-level port positions for clean routing + rendering
+  closeX?: number      // At node surface (flat connection point)
+  closeY?: number
+  farX?: number        // Extended outward (iso depth illusion)
+  farY?: number
+  cornerX?: number     // Routing waypoint (minimal corner distance)
+  cornerY?: number
+
+  // Legacy: use cornerX/cornerY for routing
+  x?: number           // Alias for cornerX
+  y?: number           // Alias for cornerY
 }
 
 /** Edge segment for collision detection */
@@ -92,6 +104,9 @@ export interface Node {
   gridWidth?: number            // Width in grid units
   gridHeight?: number           // Height in grid units
   labelBounds?: LabelBounds     // Label collision box
+
+  // Connection ports (generated during layout)
+  ports?: Port[]                // Available connection ports
 
   // Legacy pixel coordinates (populated by layout engine, will be derived from grid)
   x?: number

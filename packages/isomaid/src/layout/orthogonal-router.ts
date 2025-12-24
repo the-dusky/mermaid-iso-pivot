@@ -7,7 +7,7 @@
  */
 
 import PF from 'pathfinding'
-import type { Graph, Node, Edge } from '../model/types'
+import type { Graph, Node, Edge, Port, PortSide } from '../model/types'
 
 // Grid resolution - smaller = more precise but slower
 const GRID_CELL_SIZE = 8
@@ -49,22 +49,114 @@ function getNodeBounds(node: Node, padding: number = OBSTACLE_PADDING): Bounding
 }
 
 /**
+ * Convert our Side type to PortSide
+ */
+function sideToPortSide(side: Side): PortSide {
+  switch (side) {
+    case 'top': return 'T'
+    case 'bottom': return 'B'
+    case 'left': return 'L'
+    case 'right': return 'R'
+  }
+}
+
+/**
+ * Find best available port on a specific side of a node
+ * Prefers unused ports, then finds closest port to target
+ */
+function getBestPortOnSide(
+  node: Node,
+  side: Side,
+  targetX: number,
+  targetY: number,
+  graph: Graph
+): Port | undefined {
+  if (!node.ports) return undefined
+  const portSide = sideToPortSide(side)
+
+  // Get all ports on this side
+  const portsOnSide = node.ports.filter(p => p.side === portSide)
+  if (portsOnSide.length === 0) return undefined
+
+  // Find which ports are already allocated
+  const usedPorts = new Set<string>()
+  for (const edge of graph.edges) {
+    if (edge.from === node.id && edge.fromPort === portSide) {
+      // Find which specific port (by position)
+      const fromNode = graph.nodes.get(edge.from)
+      if (fromNode?.ports && edge.points && edge.points.length > 0) {
+        const firstPoint = edge.points[0]
+        // Find port closest to first edge point
+        const port = fromNode.ports
+          .filter(p => p.side === portSide)
+          .reduce((closest, p) => {
+            if (!p.x || !p.y) return closest
+            const dist = Math.hypot(p.x - firstPoint.x, p.y - firstPoint.y)
+            const closestDist = closest?.x && closest?.y
+              ? Math.hypot(closest.x - firstPoint.x, closest.y - firstPoint.y)
+              : Infinity
+            return dist < closestDist ? p : closest
+          }, null as Port | null)
+        if (port?.x !== undefined && port?.y !== undefined) {
+          usedPorts.add(`${node.id}-${port.x}-${port.y}`)
+        }
+      }
+    }
+    if (edge.to === node.id && edge.toPort === portSide) {
+      // Find which specific port (by position)
+      const toNode = graph.nodes.get(edge.to)
+      if (toNode?.ports && edge.points && edge.points.length > 0) {
+        const lastPoint = edge.points[edge.points.length - 1]
+        const port = toNode.ports
+          .filter(p => p.side === portSide)
+          .reduce((closest, p) => {
+            if (!p.x || !p.y) return closest
+            const dist = Math.hypot(p.x - lastPoint.x, p.y - lastPoint.y)
+            const closestDist = closest?.x && closest?.y
+              ? Math.hypot(closest.x - lastPoint.x, closest.y - lastPoint.y)
+              : Infinity
+            return dist < closestDist ? p : closest
+          }, null as Port | null)
+        if (port?.x !== undefined && port?.y !== undefined) {
+          usedPorts.add(`${node.id}-${port.x}-${port.y}`)
+        }
+      }
+    }
+  }
+
+  // First try to find an unused port closest to target
+  const unusedPorts = portsOnSide.filter(p => {
+    if (!p.x || !p.y) return false
+    return !usedPorts.has(`${node.id}-${p.x}-${p.y}`)
+  })
+
+  const candidatePorts = unusedPorts.length > 0 ? unusedPorts : portsOnSide
+
+  // Find closest port to target
+  return candidatePorts.reduce((closest, p) => {
+    if (!p.x || !p.y) return closest
+    const dist = Math.hypot(p.x - targetX, p.y - targetY)
+    const closestDist = closest?.x && closest?.y
+      ? Math.hypot(closest.x - targetX, closest.y - targetY)
+      : Infinity
+    return dist < closestDist ? p : closest
+  }, null as Port | null) || portsOnSide[0]
+}
+
+/**
  * Determine best connection sides based on relative positions
+ * Now uses ports from nodes for connection points
  */
 function getConnectionPoints(
   fromNode: Node,
   toNode: Node,
-  gap: number
+  graph: Graph
 ): { from: ConnectionPoint; to: ConnectionPoint } {
   const fx = fromNode.x!
   const fy = fromNode.y!
-  const fw = fromNode.width || 100
-  const fh = fromNode.height || 40
 
   const tx = toNode.x!
   const ty = toNode.y!
-  const tw = toNode.width || 100
-  const th = toNode.height || 40
 
   // Calculate relative position
   const dx = tx - fx
@@ -98,48 +190,48 @@ function getConnectionPoints(
     }
   }
 
-  // Calculate connection points - the point ON the node edge
-  const getEdgePoint = (node: Node, side: Side): { x: number; y: number } => {
-    const x = node.x!
-    const y = node.y!
-    const w = node.width || 100
-    const h = node.height || 40
+  // Get best available ports from nodes - prefers unused ports
+  const fromPort = getBestPortOnSide(fromNode, fromSide, tx, ty, graph)
+  const toPort = getBestPortOnSide(toNode, toSide, fx, fy, graph)
 
-    switch (side) {
-      case 'top':
-        return { x, y: y - h / 2 }
-      case 'bottom':
-        return { x, y: y + h / 2 }
-      case 'left':
-        return { x: x - w / 2, y }
-      case 'right':
-        return { x: x + w / 2, y }
+  // Use port positions if available, otherwise fallback to calculated edge points
+  let fromX: number, fromY: number
+  let toX: number, toY: number
+
+  if (fromPort && fromPort.x !== undefined && fromPort.y !== undefined) {
+    fromX = fromPort.x
+    fromY = fromPort.y
+  } else {
+    // Fallback: calculate edge point
+    const hw = (fromNode.width || 100) / 2
+    const hh = (fromNode.height || 40) / 2
+    switch (fromSide) {
+      case 'top': fromX = fx; fromY = fy - hh; break
+      case 'bottom': fromX = fx; fromY = fy + hh; break
+      case 'left': fromX = fx - hw; fromY = fy; break
+      case 'right': fromX = fx + hw; fromY = fy; break
     }
   }
 
-  // Calculate waypoint - the point the edge must pass through (standoff distance)
-  const getWaypoint = (node: Node, side: Side, standoff: number): { x: number; y: number } => {
-    const edgePt = getEdgePoint(node, side)
-    switch (side) {
-      case 'top':
-        return { x: edgePt.x, y: edgePt.y - standoff }
-      case 'bottom':
-        return { x: edgePt.x, y: edgePt.y + standoff }
-      case 'left':
-        return { x: edgePt.x - standoff, y: edgePt.y }
-      case 'right':
-        return { x: edgePt.x + standoff, y: edgePt.y }
+  if (toPort && toPort.x !== undefined && toPort.y !== undefined) {
+    toX = toPort.x
+    toY = toPort.y
+  } else {
+    // Fallback: calculate edge point
+    const hw = (toNode.width || 100) / 2
+    const hh = (toNode.height || 40) / 2
+    switch (toSide) {
+      case 'top': toX = tx; toY = ty - hh; break
+      case 'bottom': toX = tx; toY = ty + hh; break
+      case 'left': toX = tx - hw; toY = ty; break
+      case 'right': toX = tx + hw; toY = ty; break
     }
   }
 
-  const fromEdge = getEdgePoint(fromNode, fromSide)
-  const toEdge = getEdgePoint(toNode, toSide)
-  const fromWaypoint = getWaypoint(fromNode, fromSide, gap)
-  const toWaypoint = getWaypoint(toNode, toSide, gap)
-
+  // With ports, the port position IS the waypoint (ports are already offset from node)
   return {
-    from: { ...fromEdge, side: fromSide, waypoint: fromWaypoint },
-    to: { ...toEdge, side: toSide, waypoint: toWaypoint },
+    from: { x: fromX, y: fromY, side: fromSide, waypoint: { x: fromX, y: fromY } },
+    to: { x: toX, y: toY, side: toSide, waypoint: { x: toX, y: toY } },
   }
 }
 
@@ -213,7 +305,7 @@ export function findEdgeCrossings(edges: Edge[]): Map<Edge, { x: number; y: numb
  */
 export function routeEdgesOrthogonal(
   graph: Graph,
-  opts: { viewMode: 'flat' | 'iso' }
+  _opts: { viewMode: 'flat' | 'iso' }
 ): void {
   // Calculate graph bounds
   let minX = Infinity, minY = Infinity
@@ -278,9 +370,6 @@ export function routeEdgesOrthogonal(
     diagonalMovement: PF.DiagonalMovement.Never,
   })
 
-  // Calculate edge gaps based on view mode
-  const gap = opts.viewMode === 'iso' ? 14 : 8
-
   // Route each edge
   for (const edge of graph.edges) {
     const fromNode = graph.nodes.get(edge.from)
@@ -289,8 +378,12 @@ export function routeEdgesOrthogonal(
     if (fromNode.x === undefined || fromNode.y === undefined) continue
     if (toNode.x === undefined || toNode.y === undefined) continue
 
-    // Get connection points based on relative positions
-    const { from: fromPt, to: toPt } = getConnectionPoints(fromNode, toNode, gap)
+    // Get connection points from ports (ports already have offset built in)
+    const { from: fromPt, to: toPt } = getConnectionPoints(fromNode, toNode, graph)
+
+    // Save port sides to edge so renderer can find the ports
+    edge.fromPort = sideToPortSide(fromPt.side)
+    edge.toPort = sideToPortSide(toPt.side)
 
     // Create fresh grid for this edge
     const edgeGrid = grid.clone()

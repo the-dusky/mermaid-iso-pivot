@@ -1,7 +1,19 @@
 @import "tailwindcss";
 
+html {
+  @apply m-0;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
 body {
   @apply m-0;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
     "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;

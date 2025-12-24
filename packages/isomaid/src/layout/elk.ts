@@ -6,7 +6,7 @@
  */
 
 import ELK, { ElkNode, ElkExtendedEdge } from 'elkjs/lib/elk.bundled.js'
-import type { Graph, Node, GridCoord } from '../model/types'
+import type { Graph, Node, GridCoord, Port, PortSide } from '../model/types'
 import { routeEdgesOrthogonal } from './orthogonal-router'
 import { pixelToGrid, calculateLabelBounds } from '../grid'
 
@@ -25,8 +25,8 @@ export interface LayoutOptions {
 
 const DEFAULT_OPTIONS: Required<LayoutOptions> = {
   direction: 'DOWN',
-  nodeSpacing: 55,  // Slightly off from component height to avoid iso alignment issues
-  layerSpacing: 55,
+  nodeSpacing: 120,  // Extra spacing for port offsets + routing clearance
+  layerSpacing: 120,
   padding: 30,
   viewMode: 'flat',
 }
@@ -47,6 +47,116 @@ function getNodeDimensions(node: Node): { width: number; height: number } {
     default:
       return { width: baseWidth, height: 40 }
   }
+}
+
+/**
+ * Generate ports for a node with three-level positioning:
+ * - close: slightly inside node surface (a few pixels inset)
+ * - far: extended for iso depth illusion
+ * - corner: routing waypoint (minimal corner distance)
+ *
+ * For rectangles: 10 ports total (3 top, 2 right, 3 bottom, 2 left)
+ */
+function generateNodePorts(
+  node: Node,
+  cellSize: number,
+  farOffset: number,
+  layerId: string
+): Port[] {
+  if (node.x === undefined || node.y === undefined) return []
+
+  const x = node.x
+  const y = node.y
+  const halfW = (node.width || 100) / 2
+  const halfH = (node.height || 40) / 2
+
+  // close offset: a few pixels outside the edge
+  const closeOffset = 3
+
+  // corner offset: routing waypoint distance (minimal for clean turns)
+  const cornerOffset = farOffset + 15
+
+  const ports: Port[] = []
+
+  // Top side: 3 ports (left, center, right)
+  const topSpacing = halfW / 2  // Divide width into thirds
+  for (let i = 0; i < 3; i++) {
+    const offsetX = -halfW + topSpacing + (i * topSpacing)
+    const portX = x + offsetX
+    ports.push({
+      coord: pixelToGrid(portX, y - halfH - cornerOffset, cellSize, layerId),
+      side: 'T',
+      nodeId: node.id,
+      closeX: portX,
+      closeY: y - halfH - closeOffset,
+      farX: portX,
+      farY: y - halfH - farOffset,
+      cornerX: portX,
+      cornerY: y - halfH - cornerOffset,
+      x: portX,
+      y: y - halfH - cornerOffset,
+    })
+  }
+
+  // Right side: 2 ports (top, bottom)
+  const rightSpacing = halfH / 1.5  // Divide height into thirds
+  for (let i = 0; i < 2; i++) {
+    const offsetY = -halfH / 2 + (i * rightSpacing)
+    const portY = y + offsetY
+    ports.push({
+      coord: pixelToGrid(x + halfW + cornerOffset, portY, cellSize, layerId),
+      side: 'R',
+      nodeId: node.id,
+      closeX: x + halfW + closeOffset,
+      closeY: portY,
+      farX: x + halfW + farOffset,
+      farY: portY,
+      cornerX: x + halfW + cornerOffset,
+      cornerY: portY,
+      x: x + halfW + cornerOffset,
+      y: portY,
+    })
+  }
+
+  // Bottom side: 3 ports (left, center, right)
+  for (let i = 0; i < 3; i++) {
+    const offsetX = -halfW + topSpacing + (i * topSpacing)
+    const portX = x + offsetX
+    ports.push({
+      coord: pixelToGrid(portX, y + halfH + cornerOffset, cellSize, layerId),
+      side: 'B',
+      nodeId: node.id,
+      closeX: portX,
+      closeY: y + halfH + closeOffset,
+      farX: portX,
+      farY: y + halfH + farOffset,
+      cornerX: portX,
+      cornerY: y + halfH + cornerOffset,
+      x: portX,
+      y: y + halfH + cornerOffset,
+    })
+  }
+
+  // Left side: 2 ports (top, bottom)
+  for (let i = 0; i < 2; i++) {
+    const offsetY = -halfH / 2 + (i * rightSpacing)
+    const portY = y + offsetY
+    ports.push({
+      coord: pixelToGrid(x - halfW - cornerOffset, portY, cellSize, layerId),
+      side: 'L',
+      nodeId: node.id,
+      closeX: x - halfW - closeOffset,
+      closeY: portY,
+      farX: x - halfW - farOffset,
+      farY: portY,
+      cornerX: x - halfW - cornerOffset,
+      cornerY: portY,
+      x: x - halfW - cornerOffset,
+      y: portY,
+    })
+  }
+
+  return ports
 }
 
 /**
@@ -231,6 +341,15 @@ function applyElkLayout(graph: Graph, elkGraph: ElkNode, opts: Required<LayoutOp
     for (const child of elkGraph.children) {
       applyToNode(child, 0, 0, 'root')
     }
+  }
+
+  // Generate ports for all nodes
+  // Port offset is CONSTANT across view modes - coordinates must match!
+  // Set to accommodate iso depth (ISO_Z_HEIGHT + 5px = 25px)
+  const portOffset = 25
+  for (const node of graph.nodes.values()) {
+    const layerId = node.gridPos?.layer || 'root'
+    node.ports = generateNodePorts(node, cellSize, portOffset, layerId)
   }
 
   // Use A* pathfinding for orthogonal edge routing around obstacles
