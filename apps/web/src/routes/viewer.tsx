@@ -15,24 +15,26 @@ import type { ViewMode, Graph, NavState } from 'isomaid'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
-// Default sample diagram - demonstrates drill navigation
+// Default sample diagram - demonstrates multi-level drill navigation
 const DEFAULT_DIAGRAM = `%%{arch: {view: "flat", nav: "drill"}}%%
 flowchart TD
-    subgraph Frontend["Frontend Layer"]
-        Web[Web App]
-        Mobile[Mobile App]
-        Web --> Mobile
-    end
+    subgraph Cloud["Cloud Infrastructure"]
+        subgraph Frontend["Frontend Layer"]
+            Web[Web App]
+            Mobile[Mobile App]
+            Web --> Mobile
+        end
 
-    subgraph Backend["Backend Layer"]
-        API[API Server]
-        Auth[Auth Service]
-        API --> Auth
-    end
+        subgraph Backend["Backend Layer"]
+            API[API Server]
+            Auth[Auth Service]
+            API --> Auth
+        end
 
-    subgraph Database["Database Layer"]
-        Postgres[(PostgreSQL)]
-        Redis[(Redis Cache)]
+        subgraph Database["Database Layer"]
+            Postgres[(PostgreSQL)]
+            Redis[(Redis Cache)]
+        end
     end
 
     %% Connections between layers
