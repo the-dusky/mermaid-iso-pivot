@@ -15,74 +15,31 @@ import type { ViewMode, Graph, NavState } from 'isomaid'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
-// Default sample diagram
+// Default sample diagram - demonstrates drill navigation
 const DEFAULT_DIAGRAM = `%%{arch: {view: "flat", nav: "drill"}}%%
 flowchart TD
-    subgraph Client["Client Layer"]
+    subgraph Frontend["Frontend Layer"]
         Web[Web App]
         Mobile[Mobile App]
-        Desktop[Desktop App]
+        Web --> Mobile
     end
 
-    subgraph Gateway["API Gateway"]
-        LB[Load Balancer]
+    subgraph Backend["Backend Layer"]
+        API[API Server]
         Auth[Auth Service]
-        Rate[Rate Limiter]
-        LB --> Auth
-        LB --> Rate
+        API --> Auth
     end
 
-    subgraph Services["Microservices"]
-        Users[User Service]
-        Orders[Order Service]
-        Products[Product Service]
-        Payments[Payment Service]
-        Notifications[Notification Service]
+    subgraph Database["Database Layer"]
+        Postgres[(PostgreSQL)]
+        Redis[(Redis Cache)]
     end
 
-    subgraph Data["Data Layer"]
-        UserDB[(User DB)]
-        OrderDB[(Order DB)]
-        ProductDB[(Product DB)]
-        Cache[(Redis Cache)]
-    end
-
-    subgraph External["External Services"]
-        Stripe[Stripe]
-        Twilio[Twilio]
-        S3[AWS S3]
-    end
-
-    %% Client to Gateway
-    Web --> LB
-    Mobile --> LB
-    Desktop --> LB
-
-    %% Gateway to Services (cross-cutting)
-    Auth --> Users
-    Rate --> Orders
-    Rate --> Products
-
-    %% Service interconnections (complex routing needed)
-    Users --> Client
-    Orders --> Products
-    Orders --> Payments
-    Products --> Orders
-    Payments --> Notifications
-    Users --> Notifications
-
-    %% Services to Data
-    Users --> UserDB
-    Users --> Cache
-    Orders --> OrderDB
-    Orders --> Cache
-    Products --> ProductDB
-    Products --> Cache
-
-    %% External integrations
-    Payments --> Stripe
-    Notifications --> Twilio
-    Products --> S3
+    %% Connections between layers
+    Web --> API
+    Mobile --> API
+    Auth --> Postgres
+    API --> Redis
 `
 
 const STORAGE_KEY = 'isomaid-editor-source'
@@ -259,19 +216,26 @@ function DiagramViewer() {
     if (!graph) return
 
     try {
-      // Create a filtered view of the graph based on navigation state
-      const visibleNodeIds = getVisibleNodes(graph, navState)
-      const visibleEdges = getVisibleEdges(graph, navState)
+      // At root level, render entire graph. When drilled in, filter to visible nodes/edges.
+      if (navState.currentRoot === null) {
+        // Root level - show entire graph as-is
+        const svg = render(graph, { viewMode, showPorts })
+        setSvg(svg)
+      } else {
+        // Drilled into a subgraph - show only its children
+        const visibleNodeIds = getVisibleNodes(graph, navState)
+        const visibleEdges = getVisibleEdges(graph, navState)
 
-      // Create a filtered graph for rendering
-      const filteredGraph: Graph = {
-        ...graph,
-        rootNodes: visibleNodeIds,
-        edges: visibleEdges,
+        // Create a filtered graph for rendering
+        const filteredGraph: Graph = {
+          ...graph,
+          rootNodes: visibleNodeIds,
+          edges: visibleEdges,
+        }
+
+        const svg = render(filteredGraph, { viewMode, showPorts })
+        setSvg(svg)
       }
-
-      const svg = render(filteredGraph, { viewMode, showPorts })
-      setSvg(svg)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
       setPendingError(errorMessage)

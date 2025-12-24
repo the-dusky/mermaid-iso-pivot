@@ -87,20 +87,20 @@ export function drillToLevel(navState: NavState, index: number): NavState {
 /**
  * Get the nodes that should be visible in the current drill view
  *
- * If currentRoot is null, returns all root nodes.
+ * If currentRoot is null, returns all nodes (entire graph).
  * Otherwise, returns the children of the current root subgraph.
  */
 export function getVisibleNodes(graph: Graph, navState: NavState): string[] {
   if (navState.currentRoot === null) {
-    // At top level - show all root nodes
-    return graph.rootNodes
+    // At top level - show all nodes (entire graph)
+    return Array.from(graph.nodes.keys())
   }
 
   // Inside a subgraph - show its children
   const rootNode = graph.nodes.get(navState.currentRoot)
   if (!rootNode || !rootNode.isSubgraph) {
     console.warn(`Current root ${navState.currentRoot} is not a subgraph`)
-    return graph.rootNodes
+    return Array.from(graph.nodes.keys())
   }
 
   return rootNode.children || []
