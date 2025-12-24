@@ -94,12 +94,103 @@ function renderNodePorts(
   let portsSvg = ''
 
   for (const port of node.ports) {
+    const side = port.side || 'R'
+
+    // Get transformed positions
+    const cornerPos = port.cornerX !== undefined && port.cornerY !== undefined
+      ? transform(port.cornerX, port.cornerY, 0)
+      : null
+    const farPos = port.farX !== undefined && port.farY !== undefined
+      ? transform(port.farX, port.farY, 0)
+      : null
+    const closePos = port.closeX !== undefined && port.closeY !== undefined
+      ? transform(port.closeX, port.closeY, 0)
+      : null
+
+    // Draw connection lines based on side
+    // Top (T) and Left (L): corner → far with arrow at far
+    // Right (R) and Bottom (B): corner → far → close with arrow at close
+    if (side === 'T' || side === 'L') {
+      // Top and Left: line from red to blue, arrow at blue
+      if (cornerPos && farPos) {
+        portsSvg += `<line
+          x1="${cornerPos.sx}"
+          y1="${cornerPos.sy}"
+          x2="${farPos.sx}"
+          y2="${farPos.sy}"
+          stroke="#3b82f6"
+          stroke-width="2"
+          class="port-connection"
+        />`
+
+        // Arrow at blue (far) position
+        const dx = farPos.sx - cornerPos.sx
+        const dy = farPos.sy - cornerPos.sy
+        const len = Math.sqrt(dx * dx + dy * dy)
+        if (len > 0) {
+          const nx = dx / len
+          const ny = dy / len
+          const px = -ny
+          const py = nx
+          const arrowSize = 4
+
+          portsSvg += `<polygon
+            points="${farPos.sx},${farPos.sy} ${farPos.sx - nx * arrowSize + px * arrowSize},${farPos.sy - ny * arrowSize + py * arrowSize} ${farPos.sx - nx * arrowSize - px * arrowSize},${farPos.sy - ny * arrowSize - py * arrowSize}"
+            fill="#3b82f6"
+            class="port-arrow"
+          />`
+        }
+      }
+    } else {
+      // Right and Bottom: line from red to blue to green, arrow at green
+      if (cornerPos && farPos && closePos) {
+        // Line: corner → far
+        portsSvg += `<line
+          x1="${cornerPos.sx}"
+          y1="${cornerPos.sy}"
+          x2="${farPos.sx}"
+          y2="${farPos.sy}"
+          stroke="#3b82f6"
+          stroke-width="2"
+          class="port-connection"
+        />`
+
+        // Line: far → close
+        portsSvg += `<line
+          x1="${farPos.sx}"
+          y1="${farPos.sy}"
+          x2="${closePos.sx}"
+          y2="${closePos.sy}"
+          stroke="#22c55e"
+          stroke-width="2"
+          class="port-connection"
+        />`
+
+        // Arrow at green (close) position
+        const dx = closePos.sx - farPos.sx
+        const dy = closePos.sy - farPos.sy
+        const len = Math.sqrt(dx * dx + dy * dy)
+        if (len > 0) {
+          const nx = dx / len
+          const ny = dy / len
+          const px = -ny
+          const py = nx
+          const arrowSize = 4
+
+          portsSvg += `<polygon
+            points="${closePos.sx},${closePos.sy} ${closePos.sx - nx * arrowSize + px * arrowSize},${closePos.sy - ny * arrowSize + py * arrowSize} ${closePos.sx - nx * arrowSize - px * arrowSize},${closePos.sy - ny * arrowSize - py * arrowSize}"
+            fill="#22c55e"
+            class="port-arrow"
+          />`
+        }
+      }
+    }
+
     // Red corner port (routing waypoint)
-    if (port.cornerX !== undefined && port.cornerY !== undefined) {
-      const pos = transform(port.cornerX, port.cornerY, 0)
+    if (cornerPos) {
       portsSvg += `<circle
-        cx="${pos.sx}"
-        cy="${pos.sy}"
+        cx="${cornerPos.sx}"
+        cy="${cornerPos.sy}"
         r="4"
         fill="#ef4444"
         stroke="#dc2626"
@@ -109,11 +200,10 @@ function renderNodePorts(
     }
 
     // Blue far port (extended)
-    if (port.farX !== undefined && port.farY !== undefined) {
-      const pos = transform(port.farX, port.farY, 0)
+    if (farPos) {
       portsSvg += `<circle
-        cx="${pos.sx}"
-        cy="${pos.sy}"
+        cx="${farPos.sx}"
+        cy="${farPos.sy}"
         r="4"
         fill="#3b82f6"
         stroke="#2563eb"
@@ -123,11 +213,10 @@ function renderNodePorts(
     }
 
     // Green close port (at surface)
-    if (port.closeX !== undefined && port.closeY !== undefined) {
-      const pos = transform(port.closeX, port.closeY, 0)
+    if (closePos) {
       portsSvg += `<circle
-        cx="${pos.sx}"
-        cy="${pos.sy}"
+        cx="${closePos.sx}"
+        cy="${closePos.sy}"
         r="4"
         fill="#22c55e"
         stroke="#16a34a"
