@@ -220,6 +220,9 @@ function DiagramViewer() {
       const visibleNodeIds = getVisibleNodesInFoldMode(graph, navState)
       const visibleEdges = getVisibleEdgesInFoldMode(graph, navState)
 
+      // Store collapse metadata before layout (layout engine won't preserve custom props)
+      const collapseMetadata = new Map<string, { _collapsed: boolean; _hasChildren: boolean }>()
+
       // Filter the nodes map to only include visible nodes
       const filteredNodes = new Map()
       for (const nodeId of visibleNodeIds) {
@@ -227,13 +230,18 @@ function DiagramViewer() {
         if (node) {
           // Clear children for collapsed subgraphs to render them as boxes
           const isCollapsed = navState.collapsed.has(nodeId)
+          const hasChildren = node.isSubgraph && (node.children?.length ?? 0) > 0
+
+          // Store metadata for after layout
+          collapseMetadata.set(nodeId, {
+            _collapsed: isCollapsed,
+            _hasChildren: hasChildren,
+          })
+
           filteredNodes.set(nodeId, {
             ...node,
             children: isCollapsed ? [] : node.children,
-            // Add metadata for renderer to show collapse icons
-            _collapsed: isCollapsed,
-            _hasChildren: node.isSubgraph && (node.children?.length ?? 0) > 0,
-          } as any)
+          })
         }
       }
 
@@ -250,6 +258,14 @@ function DiagramViewer() {
 
       // Re-layout the graph with collapsed state to recalculate positions/sizes
       await layoutGraph(filteredGraph, { viewMode })
+
+      // Re-apply collapse metadata after layout (layout engine may have cleared it)
+      for (const [nodeId, metadata] of collapseMetadata) {
+        const node = filteredGraph.nodes.get(nodeId)
+        if (node) {
+          Object.assign(node, metadata)
+        }
+      }
 
       const svg = render(filteredGraph, { viewMode, showPorts })
       setSvg(svg)
