@@ -221,7 +221,11 @@ function DiagramViewer() {
       const visibleEdges = getVisibleEdgesInFoldMode(graph, navState)
 
       // Store collapse metadata before layout (layout engine won't preserve custom props)
-      const collapseMetadata = new Map<string, { _collapsed: boolean; _hasChildren: boolean }>()
+      const collapseMetadata = new Map<string, {
+        _collapsed: boolean
+        _hasChildren: boolean
+        originalIsSubgraph: boolean
+      }>()
 
       // Filter the nodes map to only include visible nodes
       const filteredNodes = new Map()
@@ -231,16 +235,23 @@ function DiagramViewer() {
           // Clear children for collapsed subgraphs to render them as boxes
           const isCollapsed = navState.collapsed.has(nodeId)
           const hasChildren = node.isSubgraph && (node.children?.length ?? 0) > 0
+          const isCollapsedSubgraph = isCollapsed && hasChildren
 
-          // Store metadata for after layout
+          // Store original isSubgraph state for rendering
           collapseMetadata.set(nodeId, {
             _collapsed: isCollapsed,
             _hasChildren: hasChildren,
+            originalIsSubgraph: node.isSubgraph,
           })
 
+          // For collapsed subgraphs: mark as NOT a subgraph during layout
+          // so layout engine treats it as a regular node with fixed dimensions
           filteredNodes.set(nodeId, {
             ...node,
             children: isCollapsed ? [] : node.children,
+            isSubgraph: isCollapsedSubgraph ? false : node.isSubgraph,
+            // Force small dimensions for collapsed subgraphs
+            ...(isCollapsedSubgraph ? { width: 120, height: 60 } : {}),
           })
         }
       }
@@ -263,7 +274,13 @@ function DiagramViewer() {
       for (const [nodeId, metadata] of collapseMetadata) {
         const node = filteredGraph.nodes.get(nodeId)
         if (node) {
-          Object.assign(node, metadata)
+          // Restore metadata for renderer
+          Object.assign(node, {
+            _collapsed: metadata._collapsed,
+            _hasChildren: metadata._hasChildren,
+          })
+          // Restore original isSubgraph state so renderer knows it's a subgraph
+          node.isSubgraph = metadata.originalIsSubgraph
         }
       }
 
