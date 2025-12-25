@@ -383,8 +383,8 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
   // Override dimensions for collapsed subgraphs to render as regular nodes
-  const renderNode = isCollapsedSubgraph
-    ? { ...node, width: 120, height: 60, isSubgraph: false }
+  const renderNode: Node = isCollapsedSubgraph
+    ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
     : node
 
   const fill = renderNode.style?.fill || (renderNode.isSubgraph ? opts.subgraphFill : opts.nodeFill)
@@ -467,8 +467,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
   // Override dimensions for collapsed subgraphs to render as regular nodes with height
-  const renderNode = isCollapsedSubgraph
-    ? { ...node, width: 120, height: 60, isSubgraph: false }
+  const renderNode: Node = isCollapsedSubgraph
+    ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
     : node
 
   const isSubgraph = renderNode.isSubgraph || false
@@ -501,6 +501,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   // - 3D nodes: text on top of the box
   const nodeHeight = renderNode.height || 40
   const nodeWidth = renderNode.width || 100
+  const nodeX = renderNode.x!  // Guaranteed by check at start of function
+  const nodeY = renderNode.y!  // Guaranteed by check at start of function
   const cos30 = 0.866
   const sin30 = 0.5
 
@@ -510,7 +512,7 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
     // This ensures it won't be covered by inner containers/nodes
     // Position at bottom of container (high Y = front in iso), slightly inset
     const textOffsetY = nodeHeight / 2 - 16 // Inside, near bottom edge
-    const textPos = isoProject(renderNode.x!, renderNode.y! + textOffsetY, 0)
+    const textPos = isoProject(nodeX, nodeY + textOffsetY, 0)
     const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, ${textPos.sx}, ${textPos.sy})`
     textSvg = `<text
       x="0"
@@ -525,7 +527,7 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
     >${escapeHtml(renderNode.label)}</text>`
   } else {
     // 3D node: text on top of the box
-    const textPos = isoProject(renderNode.x!, renderNode.y!, ISO_Z_HEIGHT)
+    const textPos = isoProject(nodeX, nodeY, ISO_Z_HEIGHT)
     const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, ${textPos.sx}, ${textPos.sy})`
     textSvg = `<text
       x="0"
