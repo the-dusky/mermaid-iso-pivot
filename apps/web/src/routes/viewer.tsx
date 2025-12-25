@@ -4,19 +4,16 @@ import {
   parse,
   render,
   createInitialNavState,
-  drillInto,
-  drillOut,
-  drillToLevel,
-  getVisibleNodes,
-  getVisibleEdges,
-  getBreadcrumbTrail,
+  toggleFold,
+  getVisibleNodesInFoldMode,
+  getVisibleEdgesInFoldMode,
 } from 'isomaid'
 import type { ViewMode, Graph, NavState } from 'isomaid'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
-// Default sample diagram - demonstrates multi-level drill navigation
-const DEFAULT_DIAGRAM = `%%{arch: {view: "flat", nav: "drill"}}%%
+// Default sample diagram - demonstrates multi-level fold navigation
+const DEFAULT_DIAGRAM = `%%{arch: {view: "flat", nav: "fold"}}%%
 flowchart TD
     subgraph Cloud["Cloud Infrastructure"]
         subgraph Frontend["Frontend Layer"]
@@ -218,21 +215,24 @@ function DiagramViewer() {
     if (!graph) return
 
     try {
-      // Always filter to show only nodes at the current drill level
-      // Subgraphs appear as collapsed nodes unless drilled into
-      const visibleNodeIds = getVisibleNodes(graph, navState)
-      const visibleEdges = getVisibleEdges(graph, navState)
+      // Get visible nodes and edges based on fold state
+      const visibleNodeIds = getVisibleNodesInFoldMode(graph, navState)
+      const visibleEdges = getVisibleEdgesInFoldMode(graph, navState)
 
       // Filter the nodes map to only include visible nodes
       const filteredNodes = new Map()
       for (const nodeId of visibleNodeIds) {
         const node = graph.nodes.get(nodeId)
         if (node) {
-          // Remove children from subgraphs to render them as collapsed
+          // Clear children for collapsed subgraphs to render them as boxes
+          const isCollapsed = navState.collapsed.has(nodeId)
           filteredNodes.set(nodeId, {
             ...node,
-            children: [], // Don't show children - they'll be shown when drilled into
-          })
+            children: isCollapsed ? [] : node.children,
+            // Add metadata for renderer to show collapse icons
+            _collapsed: isCollapsed,
+            _hasChildren: node.isSubgraph && (node.children?.length ?? 0) > 0,
+          } as any)
         }
       }
 
@@ -240,7 +240,10 @@ function DiagramViewer() {
       const filteredGraph: Graph = {
         ...graph,
         nodes: filteredNodes,
-        rootNodes: visibleNodeIds,
+        rootNodes: visibleNodeIds.filter(id => {
+          const node = graph.nodes.get(id)
+          return !node?.parent
+        }),
         edges: visibleEdges,
       }
 
@@ -328,24 +331,13 @@ function DiagramViewer() {
     setIsResizing(false)
   }, [])
 
-  // Drill navigation handlers
-  const handleDrillInto = useCallback((subgraphId: string) => {
-    if (!graph) return
-    const newNavState = drillInto(graph, navState, subgraphId)
-    setNavState(newNavState)
-  }, [graph, navState])
-
-  const handleDrillOut = useCallback(() => {
-    const newNavState = drillOut(navState)
+  // Fold navigation handler
+  const handleToggleFold = useCallback((subgraphId: string) => {
+    const newNavState = toggleFold(navState, subgraphId)
     setNavState(newNavState)
   }, [navState])
 
-  const handleDrillToLevel = useCallback((index: number) => {
-    const newNavState = drillToLevel(navState, index)
-    setNavState(newNavState)
-  }, [navState])
-
-  // Handle clicks on diagram elements for drill navigation
+  // Handle clicks on diagram elements for fold navigation
   const handleDiagramClick = useCallback((e: React.MouseEvent) => {
     if (!graph) return
 
@@ -360,7 +352,7 @@ function DiagramViewer() {
         if (nodeId) {
           const node = graph.nodes.get(nodeId)
           if (node?.isSubgraph) {
-            handleDrillInto(nodeId)
+            handleToggleFold(nodeId)
             e.stopPropagation()
             return
           }
@@ -368,7 +360,7 @@ function DiagramViewer() {
       }
       element = element.parentElement as SVGElement | null
     }
-  }, [graph, handleDrillInto])
+  }, [graph, handleToggleFold])
 
   useEffect(() => {
     if (isResizing) {
@@ -620,28 +612,7 @@ function DiagramViewer() {
         >
           {/* Diagram Header */}
           <div className="flex-shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
-            {/* Breadcrumb Navigation */}
-            {graph && navState.breadcrumbs.length > 0 ? (
-              <div className="flex items-center gap-2 text-xs">
-                {getBreadcrumbTrail(graph, navState).map((crumb, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    {index > 0 && <span className="text-gray-600">/</span>}
-                    <button
-                      onClick={() => handleDrillToLevel(index)}
-                      className={`px-2 py-1 rounded ${
-                        index === navState.breadcrumbs.length
-                          ? 'bg-cyan-600 text-white'
-                          : 'hover:bg-slate-700 text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      {crumb.label}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <span>Diagram Preview</span>
-            )}
+            <span>Diagram Preview</span>
             <div className="flex items-center gap-3">
               {loading && <span className="text-cyan-400 text-xs">Rendering...</span>}
 

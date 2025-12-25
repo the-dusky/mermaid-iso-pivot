@@ -82,6 +82,47 @@ function shapeToSvg(shape: ShapeResult, extraAttrs: Record<string, string> = {})
  */
 type CoordTransform = (x: number, y: number, z: number) => { sx: number; sy: number }
 
+/**
+ * Render collapse/expand icon for subgraphs
+ * Shows in bottom-right corner
+ */
+function renderCollapseIcon(
+  node: Node & { _collapsed?: boolean; _hasChildren?: boolean },
+  transform: CoordTransform
+): string {
+  // Only show icon for subgraphs that have children
+  if (!node.isSubgraph || !node._hasChildren) {
+    return ''
+  }
+
+  const nodeWidth = node.width || 100
+  const nodeHeight = node.height || 40
+
+  // Position in bottom-right corner (with some padding)
+  const iconX = nodeWidth / 2 - 20
+  const iconY = nodeHeight / 2 - 20
+
+  const pos = transform(iconX, iconY, 0)
+
+  const iconSize = 16
+  const isCollapsed = node._collapsed ?? false
+
+  // Create icon based on collapsed state
+  // Collapsed (+): expand icon
+  // Expanded (-): collapse icon
+  const icon = isCollapsed
+    ? // Plus icon for collapsed (click to expand)
+      `<line x1="-4" y1="0" x2="4" y2="0" stroke="#666" stroke-width="2" />
+       <line x1="0" y1="-4" x2="0" y2="4" stroke="#666" stroke-width="2" />`
+    : // Minus icon for expanded (click to collapse)
+      `<line x1="-4" y1="0" x2="4" y2="0" stroke="#666" stroke-width="2" />`
+
+  return `<g class="collapse-icon" transform="translate(${pos.sx}, ${pos.sy})">
+    <rect x="-8" y="-8" width="${iconSize}" height="${iconSize}" fill="white" stroke="#ccc" stroke-width="1" rx="2" />
+    ${icon}
+  </g>`
+}
+
 interface PortUsage {
   usedPorts: Set<string>  // port keys that have edges connected
   isTargetNode: boolean    // whether this node is a target of any edge
@@ -337,15 +378,24 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
     return ''
   }
 
-  const fill = node.style?.fill || (node.isSubgraph ? opts.subgraphFill : opts.nodeFill)
-  const stroke = node.style?.stroke || opts.nodeStroke
-  const opacity = node.style?.opacity ?? 1
+  // Check if this is a collapsed subgraph - render as regular node
+  const nodeExt = node as Node & { _collapsed?: boolean; _hasChildren?: boolean }
+  const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
-  const shape = getShape(node)
+  // Override dimensions for collapsed subgraphs to render as regular nodes
+  const renderNode = isCollapsedSubgraph
+    ? { ...node, width: 120, height: 60, isSubgraph: false }
+    : node
+
+  const fill = renderNode.style?.fill || (renderNode.isSubgraph ? opts.subgraphFill : opts.nodeFill)
+  const stroke = renderNode.style?.stroke || opts.nodeStroke
+  const opacity = renderNode.style?.opacity ?? 1
+
+  const shape = getShape(renderNode)
   const shapeAttrs = {
     fill,
     stroke,
-    'stroke-width': String(node.style?.strokeWidth ?? 1.5),
+    'stroke-width': String(renderNode.style?.strokeWidth ?? 1.5),
   }
 
   const shapeSvg = shapeToSvg(shape, shapeAttrs)
@@ -353,9 +403,9 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   // Position text differently for subgraphs vs regular nodes
   // Subgraphs: text inside at bottom (so it won't be covered by inner nodes)
   // Regular nodes: text centered
-  const nodeHeight = node.height || 40
+  const nodeHeight = renderNode.height || 40
   let textSvg: string
-  if (node.isSubgraph) {
+  if (renderNode.isSubgraph && !isCollapsedSubgraph) {
     const textOffsetY = nodeHeight / 2 - 16 // Inside, near bottom edge
     textSvg = `<text
       x="0"
@@ -366,7 +416,7 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
       font-size="${opts.fontSize}"
       fill="#333"
       font-weight="600"
-    >${escapeHtml(node.label)}</text>`
+    >${escapeHtml(renderNode.label)}</text>`
   } else {
     textSvg = `<text
       x="0"
@@ -376,26 +426,30 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
       font-family="${opts.fontFamily}"
       font-size="${opts.fontSize}"
       fill="#333"
-    >${escapeHtml(node.label)}</text>`
+    >${escapeHtml(renderNode.label)}</text>`
   }
 
   // Render ports - flat mode uses identity transform (relative to node center)
   const flatTransform: CoordTransform = (x, y, _z) => ({
-    sx: x - node.x!,
-    sy: y - node.y!,
+    sx: x - renderNode.x!,
+    sy: y - renderNode.y!,
   })
-  const portUsage = calculatePortUsage(node, edges)
-  const portsSvg = renderNodePorts(node, opts, flatTransform, portUsage)
+  const portUsage = calculatePortUsage(renderNode, edges)
+  const portsSvg = renderNodePorts(renderNode, opts, flatTransform, portUsage)
+
+  // Render collapse icon for subgraphs (use original node to check _collapsed state)
+  const collapseIconSvg = renderCollapseIcon(nodeExt, flatTransform)
 
   return `<g
-    class="node ${node.isSubgraph ? 'subgraph' : ''}"
+    class="node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
-    transform="translate(${node.x}, ${node.y})"
+    transform="translate(${renderNode.x}, ${renderNode.y})"
     opacity="${opacity}"
   >
     ${shapeSvg}
     ${textSvg}
     ${portsSvg}
+    ${collapseIconSvg}
   </g>`
 }
 
@@ -408,13 +462,22 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
     return ''
   }
 
-  const isSubgraph = node.isSubgraph || false
-  const fill = node.style?.fill || (isSubgraph ? opts.subgraphFill : opts.nodeFill)
-  const stroke = node.style?.stroke || opts.nodeStroke
-  const opacity = node.style?.opacity ?? 1
+  // Check if this is a collapsed subgraph - render as regular 3D node
+  const nodeExt = node as Node & { _collapsed?: boolean; _hasChildren?: boolean }
+  const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
-  // Get isometric shape - subgraphs render as flat platforms
-  const isoShape = getIsoShape(node, isSubgraph)
+  // Override dimensions for collapsed subgraphs to render as regular nodes with height
+  const renderNode = isCollapsedSubgraph
+    ? { ...node, width: 120, height: 60, isSubgraph: false }
+    : node
+
+  const isSubgraph = renderNode.isSubgraph || false
+  const fill = renderNode.style?.fill || (isSubgraph ? opts.subgraphFill : opts.nodeFill)
+  const stroke = renderNode.style?.stroke || opts.nodeStroke
+  const opacity = renderNode.style?.opacity ?? 1
+
+  // Get isometric shape - subgraphs render as flat platforms, collapsed subgraphs as 3D boxes
+  const isoShape = getIsoShape(renderNode, isSubgraph)
 
   // Sort faces by depth (lower depth = render first = behind)
   const sortedFaces = [...isoShape.faces].sort((a, b) => a.depth - b.depth)
@@ -436,18 +499,18 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   // Position text differently for subgraphs vs 3D nodes
   // - Subgraphs: text inside container at bottom (so it won't be covered by inner nodes)
   // - 3D nodes: text on top of the box
-  const nodeHeight = node.height || 40
-  const nodeWidth = node.width || 100
+  const nodeHeight = renderNode.height || 40
+  const nodeWidth = renderNode.width || 100
   const cos30 = 0.866
   const sin30 = 0.5
 
   let textSvg: string
-  if (isSubgraph) {
+  if (isSubgraph && !isCollapsedSubgraph) {
     // Subgraph: text inside container, positioned near the bottom-front edge
     // This ensures it won't be covered by inner containers/nodes
     // Position at bottom of container (high Y = front in iso), slightly inset
     const textOffsetY = nodeHeight / 2 - 16 // Inside, near bottom edge
-    const textPos = isoProject(node.x, node.y + textOffsetY, 0)
+    const textPos = isoProject(renderNode.x!, renderNode.y! + textOffsetY, 0)
     const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, ${textPos.sx}, ${textPos.sy})`
     textSvg = `<text
       x="0"
@@ -459,10 +522,10 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
       fill="#333"
       font-weight="600"
       transform="${isoMatrix}"
-    >${escapeHtml(node.label)}</text>`
+    >${escapeHtml(renderNode.label)}</text>`
   } else {
     // 3D node: text on top of the box
-    const textPos = isoProject(node.x, node.y, ISO_Z_HEIGHT)
+    const textPos = isoProject(renderNode.x!, renderNode.y!, ISO_Z_HEIGHT)
     const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, ${textPos.sx}, ${textPos.sy})`
     textSvg = `<text
       x="0"
@@ -473,22 +536,26 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
       font-size="${opts.fontSize}"
       fill="#333"
       transform="${isoMatrix}"
-    >${escapeHtml(node.label)}</text>`
+    >${escapeHtml(renderNode.label)}</text>`
   }
 
   // Render ports - iso mode uses isoProject transform
   // Ports are at Z=0 (flat on the ground)
-  const portUsage = calculatePortUsage(node, edges)
-  const portsSvg = renderNodePorts(node, opts, isoProject, portUsage)
+  const portUsage = calculatePortUsage(renderNode, edges)
+  const portsSvg = renderNodePorts(renderNode, opts, isoProject, portUsage)
+
+  // Render collapse icon for subgraphs (use original node to check _collapsed state)
+  const collapseIconSvg = renderCollapseIcon(nodeExt, isoProject)
 
   return `<g
-    class="node iso-node ${node.isSubgraph ? 'subgraph' : ''}"
+    class="node iso-node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
     opacity="${opacity}"
   >
     ${facesSvg}
     ${textSvg}
     ${portsSvg}
+    ${collapseIconSvg}
   </g>`
 }
 
