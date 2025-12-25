@@ -7,6 +7,7 @@ import {
   toggleFold,
   getVisibleNodesInFoldMode,
   getVisibleEdgesInFoldMode,
+  layoutGraph,
 } from 'isomaid'
 import type { ViewMode, Graph, NavState } from 'isomaid'
 
@@ -211,7 +212,7 @@ function DiagramViewer() {
   }, [viewMode])
 
   // Render current view based on navigation state
-  const renderCurrentView = useCallback(() => {
+  const renderCurrentView = useCallback(async () => {
     if (!graph) return
 
     try {
@@ -236,7 +237,7 @@ function DiagramViewer() {
         }
       }
 
-      // Create a filtered graph for rendering
+      // Create a filtered graph for layout and rendering
       const filteredGraph: Graph = {
         ...graph,
         nodes: filteredNodes,
@@ -246,6 +247,9 @@ function DiagramViewer() {
         }),
         edges: visibleEdges,
       }
+
+      // Re-layout the graph with collapsed state to recalculate positions/sizes
+      await layoutGraph(filteredGraph, { viewMode })
 
       const svg = render(filteredGraph, { viewMode, showPorts })
       setSvg(svg)
