@@ -4,9 +4,6 @@
  * Routes edges around nodes/subgraphs as obstacles.
  * Connects to appropriate sides of nodes based on relative positions.
  * Detects edge crossings for bridge rendering.
- *
- * Hierarchical routing: When edges cross subgraph boundaries,
- * they exit/enter through the closest ports on the parent subgraphs.
  */
 
 import PF from 'pathfinding'
@@ -33,142 +30,6 @@ interface BoundingBox {
   right: number
   top: number
   bottom: number
-}
-
-/**
- * Find the closest port on a subgraph boundary to a target point
- * Returns the port and its side
- */
-function findClosestSubgraphPort(
-  subgraph: Node,
-  targetX: number,
-  targetY: number,
-  graph: Graph
-): { port: Port; side: Side } | null {
-  if (!subgraph.ports || subgraph.ports.length === 0) return null
-
-  let closestPort: Port | null = null
-  let closestDist = Infinity
-  let closestSide: Side = 'right'
-
-  for (const port of subgraph.ports) {
-    if (port.cornerX === undefined || port.cornerY === undefined) continue
-
-    const dist = Math.hypot(port.cornerX - targetX, port.cornerY - targetY)
-    if (dist < closestDist) {
-      closestDist = dist
-      closestPort = port
-      closestSide = portSideToSide(port.side)
-    }
-  }
-
-  return closestPort ? { port: closestPort, side: closestSide } : null
-}
-
-/**
- * Convert PortSide to Side
- */
-function portSideToSide(portSide: PortSide): Side {
-  switch (portSide) {
-    case 'T': return 'top'
-    case 'B': return 'bottom'
-    case 'L': return 'left'
-    case 'R': return 'right'
-  }
-}
-
-/**
- * Check if two nodes share the same immediate parent
- */
-function haveSameParent(nodeA: Node, nodeB: Node): boolean {
-  return nodeA.parent === nodeB.parent
-}
-
-/**
- * Get the chain of ancestors from a node up to root
- */
-function getAncestorChain(node: Node, graph: Graph): string[] {
-  const chain: string[] = []
-  let current = node.parent
-  while (current) {
-    chain.push(current)
-    const parent = graph.nodes.get(current)
-    current = parent?.parent
-  }
-  return chain
-}
-
-/**
- * Find the first common ancestor of two nodes
- * Returns null if they share root (no common ancestor subgraph)
- */
-function findCommonAncestor(nodeA: Node, nodeB: Node, graph: Graph): string | null {
-  const ancestorsA = new Set(getAncestorChain(nodeA, graph))
-
-  let current = nodeB.parent
-  while (current) {
-    if (ancestorsA.has(current)) {
-      return current
-    }
-    const parent = graph.nodes.get(current)
-    current = parent?.parent
-  }
-
-  return null
-}
-
-/**
- * Get boundary crossing info for an edge
- * Returns the exit/entry subgraphs that need to be crossed
- */
-function getBoundaryCrossings(
-  fromNode: Node,
-  toNode: Node,
-  graph: Graph
-): { exitSubgraph: Node | null; entrySubgraph: Node | null } {
-  // If same parent, no boundary crossing needed
-  if (haveSameParent(fromNode, toNode)) {
-    return { exitSubgraph: null, entrySubgraph: null }
-  }
-
-  const commonAncestor = findCommonAncestor(fromNode, toNode, graph)
-
-  // Find the immediate child of common ancestor that contains fromNode
-  let exitSubgraph: Node | null = null
-  if (fromNode.parent && fromNode.parent !== commonAncestor) {
-    // Walk up from fromNode until we find a node whose parent is the common ancestor
-    let current: string | undefined = fromNode.parent
-    while (current) {
-      const node = graph.nodes.get(current)
-      if (!node) break
-      if (node.parent === commonAncestor || (!commonAncestor && !node.parent)) {
-        exitSubgraph = node
-        break
-      }
-      current = node.parent
-    }
-  } else if (fromNode.parent) {
-    exitSubgraph = graph.nodes.get(fromNode.parent) || null
-  }
-
-  // Find the immediate child of common ancestor that contains toNode
-  let entrySubgraph: Node | null = null
-  if (toNode.parent && toNode.parent !== commonAncestor) {
-    let current: string | undefined = toNode.parent
-    while (current) {
-      const node = graph.nodes.get(current)
-      if (!node) break
-      if (node.parent === commonAncestor || (!commonAncestor && !node.parent)) {
-        entrySubgraph = node
-        break
-      }
-      current = node.parent
-    }
-  } else if (toNode.parent) {
-    entrySubgraph = graph.nodes.get(toNode.parent) || null
-  }
-
-  return { exitSubgraph, entrySubgraph }
 }
 
 /**
@@ -555,58 +416,17 @@ export function routeEdgesOrthogonal(
       }
     }
 
-    // Check for boundary crossings - edges that cross between different subgraphs
-    const { exitSubgraph, entrySubgraph } = getBoundaryCrossings(fromNode, toNode, graph)
+    // Build orthogonal path between the two waypoints
+    // Choose direction based on which way we're primarily going
+    const preferHorizontalFirst = Math.abs(toPt.waypoint.x - fromPt.waypoint.x) >
+                                   Math.abs(toPt.waypoint.y - fromPt.waypoint.y)
 
-    // Collect all waypoints for the path
-    const waypoints: { x: number; y: number }[] = []
-
-    // Start with source node waypoint
-    waypoints.push(fromPt.waypoint)
-
-    // Add exit subgraph boundary port if crossing out of a subgraph
-    // Use port closest to SOURCE node so the edge exits near the source
-    if (exitSubgraph && exitSubgraph.x !== undefined && exitSubgraph.y !== undefined) {
-      const exitPortInfo = findClosestSubgraphPort(exitSubgraph, fromNode.x!, fromNode.y!, graph)
-      if (exitPortInfo && exitPortInfo.port.cornerX !== undefined && exitPortInfo.port.cornerY !== undefined) {
-        waypoints.push({ x: exitPortInfo.port.cornerX, y: exitPortInfo.port.cornerY })
-      }
-    }
-
-    // Add entry subgraph boundary port if crossing into a subgraph
-    // Use port closest to TARGET node so the edge enters near the target
-    if (entrySubgraph && entrySubgraph.x !== undefined && entrySubgraph.y !== undefined) {
-      const entryPortInfo = findClosestSubgraphPort(entrySubgraph, toNode.x!, toNode.y!, graph)
-      if (entryPortInfo && entryPortInfo.port.cornerX !== undefined && entryPortInfo.port.cornerY !== undefined) {
-        waypoints.push({ x: entryPortInfo.port.cornerX, y: entryPortInfo.port.cornerY })
-      }
-    }
-
-    // End with target node waypoint
-    waypoints.push(toPt.waypoint)
-
-    // Build orthogonal path through all waypoints
-    const fullPath: { x: number; y: number }[] = []
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      const from = waypoints[i]
-      const to = waypoints[i + 1]
-
-      // Choose direction based on which way we're primarily going
-      const preferHorizontalFirst = Math.abs(to.x - from.x) > Math.abs(to.y - from.y)
-      const segmentPath = buildOrthogonalPath(from, to, preferHorizontalFirst)
-
-      // Add segment (skip first point if not first segment to avoid duplicates)
-      if (i === 0) {
-        fullPath.push(...segmentPath)
-      } else {
-        fullPath.push(...segmentPath.slice(1))
-      }
-    }
+    const middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
 
     // Build full path: edge -> waypoint path -> edge
     edge.points = [
       { x: fromPt.x, y: fromPt.y },  // Start at source edge
-      ...fullPath,                    // Through waypoints with orthogonal routing
+      ...middlePath,                  // Through waypoints with orthogonal routing
       { x: toPt.x, y: toPt.y },       // End at target edge
     ]
   }
