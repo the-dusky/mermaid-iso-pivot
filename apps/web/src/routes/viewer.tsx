@@ -5,8 +5,10 @@ import {
   render,
   createInitialNavState,
   toggleFold,
+  testEdgeCollisions,
+  logCollisionReport,
 } from 'isomaid'
-import type { ViewMode, Graph, NavState } from 'isomaid'
+import type { ViewMode, Graph, NavState, CollisionTestResult } from 'isomaid'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
@@ -106,6 +108,9 @@ function DiagramViewer() {
   const [pendingError, setPendingError] = useState<string | null>(null)
   // Visible error - shown when user clicks Check
   const [visibleError, setVisibleError] = useState<string | null>(null)
+  // Collision test results
+  const [collisionResult, setCollisionResult] = useState<CollisionTestResult | null>(null)
+  const [showCollisions, setShowCollisions] = useState(false)
   const [loading, setLoading] = useState(true)
   const [splitPosition, setSplitPosition] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -274,6 +279,12 @@ function DiagramViewer() {
       console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}`)
       const svg = render(renderGraph, { viewMode, showPorts, showGeofences })
       console.log(`Render completed, svg length=${svg.length}`)
+
+      // Run collision test after render
+      const testResult = testEdgeCollisions(renderGraph)
+      logCollisionReport(testResult)
+      setCollisionResult(testResult)
+
       setSvg(svg)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
@@ -489,7 +500,7 @@ function DiagramViewer() {
   }, [panX, panY, zoom])
 
   // Mouse wheel handler - scroll to pan, Ctrl/Cmd+scroll to zoom
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault() // Always prevent default to avoid page scroll
 
     if (e.ctrlKey || e.metaKey) {
@@ -516,6 +527,16 @@ function DiagramViewer() {
     }
   }, [zoom])
 
+  // Attach wheel event listener with passive: false to allow preventDefault
+  useEffect(() => {
+    const container = diagramContainerRef.current
+    if (!container) return
+
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      container.removeEventListener('wheel', handleWheel)
+    }
+  }, [handleWheel])
 
   // Determine status indicator
   const hasError = pendingError !== null
@@ -555,6 +576,26 @@ function DiagramViewer() {
                 <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
               )}
               Check
+            </button>
+
+            {/* Collision Test Button */}
+            <button
+              onClick={() => setShowCollisions(!showCollisions)}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors flex items-center gap-2 ${
+                collisionResult?.hasCollisions
+                  ? 'text-red-400 hover:text-red-300 hover:bg-red-900/30'
+                  : 'text-gray-400 hover:text-white hover:bg-slate-700'
+              }`}
+            >
+              {collisionResult?.hasCollisions && (
+                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+              )}
+              Collisions
+              {collisionResult && (
+                <span className="text-xs opacity-70">
+                  ({collisionResult.collidingEdges}/{collisionResult.totalEdges})
+                </span>
+              )}
             </button>
 
             {/* View Mode Toggle */}
@@ -696,7 +737,6 @@ function DiagramViewer() {
           <div
             ref={diagramContainerRef}
             className="flex-1 overflow-hidden relative bg-slate-900"
-            onWheel={handleWheel}
           >
             {/* Show visible error (only when Check is clicked) */}
             {visibleError && (
@@ -711,6 +751,49 @@ function DiagramViewer() {
                   </button>
                 </div>
                 <pre className="text-sm whitespace-pre-wrap font-mono">{visibleError}</pre>
+              </div>
+            )}
+
+            {/* Show collision test results */}
+            {showCollisions && collisionResult && (
+              <div className={`absolute top-4 right-4 z-10 ${
+                collisionResult.hasCollisions
+                  ? 'bg-red-900/80 border-red-500'
+                  : 'bg-green-900/80 border-green-500'
+              } border rounded-lg p-4 text-white max-w-md max-h-96 overflow-auto`}>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-bold">
+                    {collisionResult.hasCollisions ? '✗ Collisions Detected' : '✓ No Collisions'}
+                  </h3>
+                  <button
+                    onClick={() => setShowCollisions(false)}
+                    className="text-gray-300 hover:text-white text-sm"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <p className="text-sm opacity-80 mb-2">
+                  {collisionResult.collidingEdges}/{collisionResult.totalEdges} edges have collisions
+                </p>
+                {collisionResult.collisions.length > 0 && (
+                  <div className="space-y-2 text-sm">
+                    {collisionResult.collisions.map((c, i) => (
+                      <div key={i} className="bg-black/30 rounded p-2">
+                        <div className="font-mono text-red-300">{c.edgeId}</div>
+                        {c.collidingNodes.length > 0 && (
+                          <div className="text-gray-300">
+                            Nodes: {c.collidingNodes.join(', ')}
+                          </div>
+                        )}
+                        {c.collidingLabels.length > 0 && (
+                          <div className="text-yellow-300">
+                            Labels: {c.collidingLabels.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
