@@ -50,6 +50,72 @@ function getNodeBounds(node: Node, padding: number = OBSTACLE_PADDING): Bounding
 }
 
 /**
+ * Check if a line segment intersects a bounding box
+ */
+function segmentIntersectsBox(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  box: BoundingBox
+): boolean {
+  // Check if either endpoint is inside the box
+  const p1Inside = p1.x >= box.left && p1.x <= box.right && p1.y >= box.top && p1.y <= box.bottom
+  const p2Inside = p2.x >= box.left && p2.x <= box.right && p2.y >= box.top && p2.y <= box.bottom
+  if (p1Inside || p2Inside) return true
+
+  // Check if segment crosses the box (for orthogonal segments)
+  // Horizontal segment
+  if (Math.abs(p1.y - p2.y) < 1) {
+    const minX = Math.min(p1.x, p2.x)
+    const maxX = Math.max(p1.x, p2.x)
+    if (p1.y >= box.top && p1.y <= box.bottom && maxX >= box.left && minX <= box.right) {
+      return true
+    }
+  }
+  // Vertical segment
+  if (Math.abs(p1.x - p2.x) < 1) {
+    const minY = Math.min(p1.y, p2.y)
+    const maxY = Math.max(p1.y, p2.y)
+    if (p1.x >= box.left && p1.x <= box.right && maxY >= box.top && minY <= box.bottom) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Check if a path collides with any obstacle nodes
+ * Excludes source and target nodes from collision check
+ */
+function pathCollidesWithNodes(
+  path: { x: number; y: number }[],
+  graph: Graph,
+  sourceId: string,
+  targetId: string
+): boolean {
+  if (path.length < 2) return false
+
+  for (const node of graph.nodes.values()) {
+    // Skip source and target nodes
+    if (node.id === sourceId || node.id === targetId) continue
+    // Skip subgraphs (they contain other nodes, edges should be able to pass through)
+    if (node.isSubgraph) continue
+
+    const bounds = getNodeBounds(node, OBSTACLE_PADDING)
+    if (!bounds) continue
+
+    // Check each segment of the path
+    for (let i = 0; i < path.length - 1; i++) {
+      if (segmentIntersectsBox(path[i], path[i + 1], bounds)) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+/**
  * Convert our Side type to PortSide
  */
 function sideToPortSide(side: Side): PortSide {
@@ -416,12 +482,23 @@ export function routeEdgesOrthogonal(
       }
     }
 
-    // Build orthogonal path between the two waypoints
-    // Choose direction based on which way we're primarily going
+    // Build simple orthogonal path first
     const preferHorizontalFirst = Math.abs(toPt.waypoint.x - fromPt.waypoint.x) >
                                    Math.abs(toPt.waypoint.y - fromPt.waypoint.y)
+    let middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
 
-    const middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
+    // Check if simple path collides with any obstacle nodes
+    const collidesWithObstacle = pathCollidesWithNodes(middlePath, graph, edge.from, edge.to)
+
+    if (collidesWithObstacle) {
+      // Try A* pathfinding to route around obstacles
+      const rawPath = finder.findPath(start.gx, start.gy, end.gx, end.gy, edgeGrid)
+      if (rawPath.length > 0) {
+        const simplified = simplifyPath(rawPath)
+        middlePath = simplified.map(([gx, gy]) => toWorld(gx, gy))
+      }
+      // If A* fails, keep the simple path (will overlap but at least renders)
+    }
 
     // Build full path: edge -> waypoint path -> edge
     edge.points = [
