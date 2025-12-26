@@ -1,4 +1,4 @@
-# ADR-002: Edge Nudging Post-Processing
+# ADR 2025-12-26: Edge Nudging Post-Processing
 
 ## Status
 Proposed (Long-term)

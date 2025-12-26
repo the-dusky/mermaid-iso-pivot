@@ -1,4 +1,4 @@
-# ADR-001: Visibility Graph Edge Routing
+# ADR 2025-12-26: Visibility Graph Edge Routing
 
 ## Status
 Proposed (Medium-term)
