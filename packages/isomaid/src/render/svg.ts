@@ -52,7 +52,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   fontFamily: 'system-ui, sans-serif',
   fontSize: 14,
   showGrid: true,
-  showPorts: true,
+  showPorts: false,
   showGeofences: false,
 }
 

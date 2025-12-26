@@ -76,7 +76,7 @@ function DiagramViewer() {
         return saved === 'true'
       }
     }
-    return true
+    return false
   })
   const [showGeofences, setShowGeofences] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
