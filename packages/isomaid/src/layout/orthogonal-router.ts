@@ -565,16 +565,18 @@ export function routeEdgesOrthogonal(
     waypoints.push(fromPt.waypoint)
 
     // Add exit subgraph boundary port if crossing out of a subgraph
+    // Use port closest to SOURCE node so the edge exits near the source
     if (exitSubgraph && exitSubgraph.x !== undefined && exitSubgraph.y !== undefined) {
-      const exitPortInfo = findClosestSubgraphPort(exitSubgraph, toNode.x!, toNode.y!, graph)
+      const exitPortInfo = findClosestSubgraphPort(exitSubgraph, fromNode.x!, fromNode.y!, graph)
       if (exitPortInfo && exitPortInfo.port.cornerX !== undefined && exitPortInfo.port.cornerY !== undefined) {
         waypoints.push({ x: exitPortInfo.port.cornerX, y: exitPortInfo.port.cornerY })
       }
     }
 
     // Add entry subgraph boundary port if crossing into a subgraph
+    // Use port closest to TARGET node so the edge enters near the target
     if (entrySubgraph && entrySubgraph.x !== undefined && entrySubgraph.y !== undefined) {
-      const entryPortInfo = findClosestSubgraphPort(entrySubgraph, fromNode.x!, fromNode.y!, graph)
+      const entryPortInfo = findClosestSubgraphPort(entrySubgraph, toNode.x!, toNode.y!, graph)
       if (entryPortInfo && entryPortInfo.port.cornerX !== undefined && entryPortInfo.port.cornerY !== undefined) {
         waypoints.push({ x: entryPortInfo.port.cornerX, y: entryPortInfo.port.cornerY })
       }
