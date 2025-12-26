@@ -55,6 +55,31 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
 // Z-height for isometric node extrusion
 const ISO_Z_HEIGHT = 20
 
+// Muted color palette for flat subgraphs
+const SUBGRAPH_COLORS = [
+  '#E3F2FD', // Light blue
+  '#F3E5F5', // Light purple
+  '#E8F5E9', // Light green
+  '#FFF3E0', // Light orange
+  '#FCE4EC', // Light pink
+  '#E0F2F1', // Light teal
+  '#FFF9C4', // Light yellow
+  '#F1F8E9', // Light lime
+]
+
+/**
+ * Simple hash function for consistent color selection
+ */
+function hashCode(str: string): number {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return hash
+}
+
 /**
  * Convert ShapeResult to SVG string (for flat mode)
  */
@@ -88,7 +113,10 @@ type CoordTransform = (x: number, y: number, z: number) => { sx: number; sy: num
  */
 function renderCollapseIcon(
   node: Node & { _collapsed?: boolean; _hasChildren?: boolean },
-  transform: CoordTransform
+  transform: CoordTransform,
+  nodeWorldX: number,
+  nodeWorldY: number,
+  useIsoMatrix: boolean = false
 ): string {
   // Only show icon for subgraphs that have children
   if (!node.isSubgraph || !node._hasChildren) {
@@ -99,10 +127,15 @@ function renderCollapseIcon(
   const nodeHeight = node.height || 40
 
   // Position in bottom-right corner (with some padding)
-  const iconX = nodeWidth / 2 - 20
-  const iconY = nodeHeight / 2 - 20
+  // Calculate offset from node center
+  const iconOffsetX = nodeWidth / 2 - 20
+  const iconOffsetY = nodeHeight / 2 - 20
 
-  const pos = transform(iconX, iconY, 0)
+  // Convert to world coordinates
+  const iconWorldX = nodeWorldX + iconOffsetX
+  const iconWorldY = nodeWorldY + iconOffsetY
+
+  const pos = transform(iconWorldX, iconWorldY, 0)
 
   const iconSize = 16
   const isCollapsed = node._collapsed ?? false
@@ -117,7 +150,22 @@ function renderCollapseIcon(
     : // Minus icon for expanded (click to collapse)
       `<line x1="-4" y1="0" x2="4" y2="0" stroke="#666" stroke-width="2" />`
 
-  return `<g class="collapse-icon" transform="translate(${pos.sx}, ${pos.sy})">
+  // For isometric mode, apply the iso matrix transformation to icon contents
+  if (useIsoMatrix) {
+    const cos30 = 0.866
+    const sin30 = 0.5
+    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+
+    return `<g class="collapse-icon" data-node-id="${node.id}" transform="translate(${pos.sx}, ${pos.sy})" style="cursor: pointer;">
+      <g transform="${isoMatrix}">
+        <rect x="-8" y="-8" width="${iconSize}" height="${iconSize}" fill="white" stroke="#ccc" stroke-width="1" rx="2" />
+        ${icon}
+      </g>
+    </g>`
+  }
+
+  // Flat mode: no matrix transformation
+  return `<g class="collapse-icon" data-node-id="${node.id}" transform="translate(${pos.sx}, ${pos.sy})" style="cursor: pointer;">
     <rect x="-8" y="-8" width="${iconSize}" height="${iconSize}" fill="white" stroke="#ccc" stroke-width="1" rx="2" />
     ${icon}
   </g>`
@@ -179,27 +227,27 @@ function calculatePortUsage(node: Node, edges: Edge[]): PortUsage {
   return { usedPorts, isTargetNode }
 }
 
+/**
+ * Render debug port circles (only when showPorts is enabled)
+ *
+ * Port connection lines are now part of unified edge rendering.
+ * This function only shows the debug visualization of port positions.
+ */
 function renderNodePorts(
   node: Node,
   opts: Required<RenderOptions>,
   transform: CoordTransform,
-  usage: PortUsage
+  _usage: PortUsage  // No longer used for connection lines
 ): string {
-  if (!node.ports || node.ports.length === 0) {
+  // Only render port circles when debug mode is enabled
+  if (!opts.showPorts || !node.ports || node.ports.length === 0) {
     return ''
   }
 
   let portsSvg = ''
-  const isIso = opts.viewMode === 'iso'
 
   for (const port of node.ports) {
-    const side = port.side || 'R'
-
-    // Create a unique key for this port (using corner position)
-    const portKey = `${port.nodeId}:${port.cornerX},${port.cornerY}`
-    const isPortUsed = usage.usedPorts.has(portKey)
-
-    // Get transformed positions
+    // Get transformed positions for visual indicators
     const cornerPos = port.cornerX !== undefined && port.cornerY !== undefined
       ? transform(port.cornerX, port.cornerY, 0)
       : null
@@ -210,159 +258,43 @@ function renderNodePorts(
       ? transform(port.closeX, port.closeY, 0)
       : null
 
-    // Draw connection lines (only if port is used by an edge)
-    // Flat mode: All sides uniform (corner → far → close, arrow at close)
-    // Iso mode: Top/Left (corner → far, arrow at far), Right/Bottom (corner → far → close, arrow at close)
-    const useShortConnection = isIso && (side === 'T' || side === 'L')
-
-    if (isPortUsed && useShortConnection) {
-      // Top and Left in iso: line from corner to far, arrow at far
-      if (cornerPos && farPos && port.cornerX !== undefined && port.cornerY !== undefined && port.farX !== undefined && port.farY !== undefined) {
-        portsSvg += `<line
-          x1="${cornerPos.sx}"
-          y1="${cornerPos.sy}"
-          x2="${farPos.sx}"
-          y2="${farPos.sy}"
-          stroke="${opts.edgeStroke}"
-          stroke-width="1.5"
-          class="port-connection"
-        />`
-
-        // Arrow at far position - only if this is a target node
-        if (usage.isTargetNode) {
-          // Calculate direction in world space (before projection)
-          const dx = port.farX - port.cornerX
-          const dy = port.farY - port.cornerY
-          const len = Math.sqrt(dx * dx + dy * dy)
-          if (len > 0) {
-            const nx = dx / len
-            const ny = dy / len
-            const px = -ny
-            const py = nx
-            const arrowSize = 4
-            const arrowExtend = 3  // Extend tip beyond line
-
-            // Create arrow vertices in world space
-            const tip3D = {
-              x: port.farX + nx * arrowExtend,
-              y: port.farY + ny * arrowExtend,
-            }
-            const left3D = {
-              x: port.farX - nx * arrowSize + px * arrowSize,
-              y: port.farY - ny * arrowSize + py * arrowSize,
-            }
-            const right3D = {
-              x: port.farX - nx * arrowSize - px * arrowSize,
-              y: port.farY - ny * arrowSize - py * arrowSize,
-            }
-
-            // Project each vertex
-            const tipPos = transform(tip3D.x, tip3D.y, 0)
-            const leftPos = transform(left3D.x, left3D.y, 0)
-            const rightPos = transform(right3D.x, right3D.y, 0)
-
-            portsSvg += `<polygon
-              points="${tipPos.sx},${tipPos.sy} ${leftPos.sx},${leftPos.sy} ${rightPos.sx},${rightPos.sy}"
-              fill="${opts.edgeStroke}"
-              class="port-arrow"
-            />`
-          }
-        }
-      }
-    } else if (isPortUsed) {
-      // All other cases: line from corner to far to close, arrow at close
-      if (cornerPos && farPos && closePos) {
-        // Line: corner → far → close (single continuous path)
-        portsSvg += `<polyline
-          points="${cornerPos.sx},${cornerPos.sy} ${farPos.sx},${farPos.sy} ${closePos.sx},${closePos.sy}"
-          fill="none"
-          stroke="${opts.edgeStroke}"
-          stroke-width="1.5"
-          class="port-connection"
-        />`
-
-        // Arrow at close position - only if this is a target node
-        if (usage.isTargetNode && port.closeX !== undefined && port.closeY !== undefined && port.farX !== undefined && port.farY !== undefined) {
-          const dx = port.closeX - port.farX
-          const dy = port.closeY - port.farY
-          const len = Math.sqrt(dx * dx + dy * dy)
-          if (len > 0) {
-            const nx = dx / len
-            const ny = dy / len
-            const px = -ny
-            const py = nx
-            const arrowSize = 4
-            const arrowExtend = 3  // Extend tip beyond line
-
-            // Create arrow vertices in world space
-            const tip3D = {
-              x: port.closeX + nx * arrowExtend,
-              y: port.closeY + ny * arrowExtend,
-            }
-            const left3D = {
-              x: port.closeX - nx * arrowSize + px * arrowSize,
-              y: port.closeY - ny * arrowSize + py * arrowSize,
-            }
-            const right3D = {
-              x: port.closeX - nx * arrowSize - px * arrowSize,
-              y: port.closeY - ny * arrowSize - py * arrowSize,
-            }
-
-            // Project each vertex
-            const tipPos = transform(tip3D.x, tip3D.y, 0)
-            const leftPos = transform(left3D.x, left3D.y, 0)
-            const rightPos = transform(right3D.x, right3D.y, 0)
-
-            portsSvg += `<polygon
-              points="${tipPos.sx},${tipPos.sy} ${leftPos.sx},${leftPos.sy} ${rightPos.sx},${rightPos.sy}"
-              fill="${opts.edgeStroke}"
-              class="port-arrow"
-            />`
-          }
-        }
-      }
+    // Red corner port (routing waypoint)
+    if (cornerPos) {
+      portsSvg += `<circle
+        cx="${cornerPos.sx}"
+        cy="${cornerPos.sy}"
+        r="4"
+        fill="#ef4444"
+        stroke="#dc2626"
+        stroke-width="1.5"
+        class="port port-corner"
+      />`
     }
 
-    // Port circles - only show when showPorts is enabled
-    if (opts.showPorts) {
-      // Red corner port (routing waypoint)
-      if (cornerPos) {
-        portsSvg += `<circle
-          cx="${cornerPos.sx}"
-          cy="${cornerPos.sy}"
-          r="4"
-          fill="#ef4444"
-          stroke="#dc2626"
-          stroke-width="1.5"
-          class="port port-corner"
-        />`
-      }
+    // Blue far port (extended)
+    if (farPos) {
+      portsSvg += `<circle
+        cx="${farPos.sx}"
+        cy="${farPos.sy}"
+        r="4"
+        fill="#3b82f6"
+        stroke="#2563eb"
+        stroke-width="1.5"
+        class="port port-far"
+      />`
+    }
 
-      // Blue far port (extended)
-      if (farPos) {
-        portsSvg += `<circle
-          cx="${farPos.sx}"
-          cy="${farPos.sy}"
-          r="4"
-          fill="#3b82f6"
-          stroke="#2563eb"
-          stroke-width="1.5"
-          class="port port-far"
-        />`
-      }
-
-      // Green close port (at surface)
-      if (closePos) {
-        portsSvg += `<circle
-          cx="${closePos.sx}"
-          cy="${closePos.sy}"
-          r="4"
-          fill="#22c55e"
-          stroke="#16a34a"
-          stroke-width="1.5"
-          class="port port-close"
-        />`
-      }
+    // Green close port (at surface)
+    if (closePos) {
+      portsSvg += `<circle
+        cx="${closePos.sx}"
+        cy="${closePos.sy}"
+        r="4"
+        fill="#22c55e"
+        stroke="#16a34a"
+        stroke-width="1.5"
+        class="port port-close"
+      />`
     }
   }
 
@@ -382,20 +314,39 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   const nodeExt = node as Node & { _collapsed?: boolean; _hasChildren?: boolean }
   const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
+  console.log(`[RENDER FLAT] ${node.id}: isSubgraph=${node.isSubgraph}, _collapsed=${nodeExt._collapsed}, _hasChildren=${nodeExt._hasChildren}, isCollapsedSubgraph=${isCollapsedSubgraph}`)
+
   // Override dimensions for collapsed subgraphs to render as regular nodes
   const renderNode: Node = isCollapsedSubgraph
     ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
     : node
 
-  const fill = renderNode.style?.fill || (renderNode.isSubgraph ? opts.subgraphFill : opts.nodeFill)
-  const stroke = renderNode.style?.stroke || opts.nodeStroke
-  const opacity = renderNode.style?.opacity ?? 1
+  if (isCollapsedSubgraph) {
+    console.log(`[RENDER FLAT] ${node.id} will render as regular box (not subgraph platform)`)
+  }
+
+  // For expanded subgraphs: use colorful muted colors, no stroke, 80% opacity, rounded corners
+  const isExpandedSubgraph = renderNode.isSubgraph && !isCollapsedSubgraph
+
+  let fill = renderNode.style?.fill || opts.nodeFill
+  let stroke = renderNode.style?.stroke || opts.nodeStroke
+  let opacity = renderNode.style?.opacity ?? 1
+
+  if (isExpandedSubgraph) {
+    // Pick a color based on node ID for consistency
+    const colorIndex = Math.abs(hashCode(node.id)) % SUBGRAPH_COLORS.length
+    fill = SUBGRAPH_COLORS[colorIndex]
+    stroke = 'none'
+    opacity = 0.7
+  }
 
   const shape = getShape(renderNode)
   const shapeAttrs = {
     fill,
     stroke,
-    'stroke-width': String(renderNode.style?.strokeWidth ?? 1.5),
+    'stroke-width': isExpandedSubgraph ? '0' : String(renderNode.style?.strokeWidth ?? 1.5),
+    rx: isExpandedSubgraph ? '4' : String(shape.attrs.rx || '0'),
+    ry: isExpandedSubgraph ? '4' : String(shape.attrs.ry || '0'),
   }
 
   const shapeSvg = shapeToSvg(shape, shapeAttrs)
@@ -438,7 +389,7 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   const portsSvg = renderNodePorts(renderNode, opts, flatTransform, portUsage)
 
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
-  const collapseIconSvg = renderCollapseIcon(nodeExt, flatTransform)
+  const collapseIconSvg = renderCollapseIcon(nodeExt, flatTransform, renderNode.x!, renderNode.y!, false)
 
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
@@ -466,15 +417,33 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   const nodeExt = node as Node & { _collapsed?: boolean; _hasChildren?: boolean }
   const isCollapsedSubgraph = node.isSubgraph && nodeExt._collapsed && nodeExt._hasChildren
 
+  console.log(`[RENDER ISO] ${node.id}: isSubgraph=${node.isSubgraph}, _collapsed=${nodeExt._collapsed}, _hasChildren=${nodeExt._hasChildren}, isCollapsedSubgraph=${isCollapsedSubgraph}`)
+
   // Override dimensions for collapsed subgraphs to render as regular nodes with height
   const renderNode: Node = isCollapsedSubgraph
     ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
     : node
 
   const isSubgraph = renderNode.isSubgraph || false
-  const fill = renderNode.style?.fill || (isSubgraph ? opts.subgraphFill : opts.nodeFill)
-  const stroke = renderNode.style?.stroke || opts.nodeStroke
-  const opacity = renderNode.style?.opacity ?? 1
+
+  if (isCollapsedSubgraph) {
+    console.log(`[RENDER ISO] ${node.id} will render as 3D box: isSubgraph=${isSubgraph}`)
+  }
+
+  // For expanded subgraphs: use colorful muted colors, no stroke, 80% opacity
+  const isExpandedSubgraph = renderNode.isSubgraph && !isCollapsedSubgraph
+
+  let fill = renderNode.style?.fill || opts.nodeFill
+  let stroke = renderNode.style?.stroke || opts.nodeStroke
+  let opacity = renderNode.style?.opacity ?? 1
+
+  if (isExpandedSubgraph) {
+    // Pick a color based on node ID for consistency
+    const colorIndex = Math.abs(hashCode(node.id)) % SUBGRAPH_COLORS.length
+    fill = SUBGRAPH_COLORS[colorIndex]
+    stroke = 'none'
+    opacity = 0.7
+  }
 
   // Get isometric shape - subgraphs render as flat platforms, collapsed subgraphs as 3D boxes
   const isoShape = getIsoShape(renderNode, isSubgraph)
@@ -489,8 +458,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
       return `<polygon
         points="${face.points}"
         fill="${faceFill}"
-        stroke="${stroke}"
-        stroke-width="1"
+        stroke="none"
+        stroke-width="0"
         class="iso-face iso-${face.type}"
       />`
     })
@@ -521,8 +490,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
       dominant-baseline="central"
       font-family="${opts.fontFamily}"
       font-size="${opts.fontSize}"
-      fill="#333"
-      font-weight="600"
+      fill="#666"
+      font-weight="700"
       transform="${isoMatrix}"
     >${escapeHtml(renderNode.label)}</text>`
   } else {
@@ -536,7 +505,8 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
       dominant-baseline="central"
       font-family="${opts.fontFamily}"
       font-size="${opts.fontSize}"
-      fill="#333"
+      fill="#666"
+      font-weight="700"
       transform="${isoMatrix}"
     >${escapeHtml(renderNode.label)}</text>`
   }
@@ -547,7 +517,7 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   const portsSvg = renderNodePorts(renderNode, opts, isoProject, portUsage)
 
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
-  const collapseIconSvg = renderCollapseIcon(nodeExt, isoProject)
+  const collapseIconSvg = renderCollapseIcon(nodeExt, isoProject, nodeX, nodeY, true)
 
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
@@ -569,13 +539,16 @@ function getEdgeStyle(edge: Edge): { strokeDasharray: string; strokeWidth: numbe
   if (edge.style === 'dashed') strokeDasharray = '5,5'
   else if (edge.style === 'dotted') strokeDasharray = '2,2'
 
-  const strokeWidth = edge.style === 'thick' ? 3 : 1.5
+  const strokeWidth = edge.style === 'thick' ? 7 : 5.5
 
   return { strokeDasharray, strokeWidth }
 }
 
 /**
  * Render an edge in flat mode
+ *
+ * Edges are extended from corner (red) ports to close (green) ports at both ends,
+ * creating a unified line from source surface to target surface.
  */
 function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: string): string {
   if (!edge.points || edge.points.length < 2) {
@@ -589,13 +562,33 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
   const arrowLen = 10
   const arrowWidth = 5
 
+  // Extend path with close port coordinates for unified rendering
+  // In flat mode: always use close (green) ports at both ends
+  let extendedPoints = [...edge.points]
+
+  // Prepend source close port (if available)
+  if (edge.sourcePort?.closeX !== undefined && edge.sourcePort?.closeY !== undefined) {
+    extendedPoints = [
+      { x: edge.sourcePort.closeX, y: edge.sourcePort.closeY },
+      ...extendedPoints
+    ]
+  }
+
+  // Append target close port (if available)
+  if (edge.targetPort?.closeX !== undefined && edge.targetPort?.closeY !== undefined) {
+    extendedPoints = [
+      ...extendedPoints,
+      { x: edge.targetPort.closeX, y: edge.targetPort.closeY }
+    ]
+  }
+
   // Calculate path and arrow
-  let pathPoints = edge.points
+  let pathPoints = extendedPoints
   let arrowSvg = ''
 
-  if (hasArrow && edge.points.length >= 2) {
-    const lastPt = edge.points[edge.points.length - 1]
-    const prevPt = edge.points[edge.points.length - 2]
+  if (hasArrow && extendedPoints.length >= 2) {
+    const lastPt = extendedPoints[extendedPoints.length - 1]
+    const prevPt = extendedPoints[extendedPoints.length - 2]
 
     // Calculate direction
     const dx = lastPt.x - prevPt.x
@@ -612,7 +605,7 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
         x: lastPt.x - nx * arrowLen,
         y: lastPt.y - ny * arrowLen
       }
-      pathPoints = [...edge.points.slice(0, -1), shortenedLast]
+      pathPoints = [...extendedPoints.slice(0, -1), shortenedLast]
 
       // Perpendicular for arrow width
       const px = -ny
@@ -631,7 +624,7 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
 
       arrowSvg = `<polygon
         points="${tip.x},${tip.y} ${left.x},${left.y} ${right.x},${right.y}"
-        fill="#ff0000"
+        fill="${opts.edgeStroke}"
         class="edge-arrow"
       />`
     }
@@ -681,9 +674,9 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
 
   // Show edge label or debug label
   const labelToShow = edgeLabel || edge.label
-  if (labelToShow && edge.points.length >= 2) {
-    const midIdx = Math.floor(edge.points.length / 2)
-    const midPoint = edge.points[midIdx]
+  if (labelToShow && extendedPoints.length >= 2) {
+    const midIdx = Math.floor(extendedPoints.length / 2)
+    const midPoint = extendedPoints[midIdx]
     svg += `<text
       x="${midPoint.x}"
       y="${midPoint.y - 8}"
@@ -698,43 +691,71 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
 }
 
 /**
- * Render an edge in isometric mode
+ * Render an edge in isometric mode using matrix transform
  *
- * Arrowheads use true isometric projection:
- * 1. Calculate direction in flat 2D space
- * 2. Define arrowhead triangle vertices in 3D space
- * 3. Project each vertex through isoProject()
- * This gives proper Cloudcraft-style isometric foreshortening
+ * Uses the isometric matrix transform so strokes lay flat on the ground plane.
+ * Edges are extended from corner (red) ports to:
+ * - close (green) for Right/Bottom sides
+ * - far (blue) for Top/Left sides (to avoid overlap with iso node faces)
  */
 function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: string): string {
   if (!edge.points || edge.points.length < 2) {
     return ''
   }
 
-  // Project edge points to isometric at ground level (Z=0)
-  // This matches the port positions which are also at Z=0
-  const edgeZ = 0
+  const cos30 = 0.866
+  const sin30 = 0.5
+  const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
 
   // Arrow dimensions
   const arrowLen = 12
   const arrowWidth = 5
   const hasArrow = edge.toArrow !== 'none'
 
+  // Extend path with appropriate port coordinates for unified rendering
+  // Source: ALWAYS use close (green) port
+  // Target: close (green) for Right/Bottom, far (blue) for Top/Left
+  let extendedPoints = [...edge.points]
+
+  // Prepend source port endpoint - always use close (green)
+  if (edge.sourcePort?.closeX !== undefined && edge.sourcePort?.closeY !== undefined) {
+    extendedPoints = [
+      { x: edge.sourcePort.closeX, y: edge.sourcePort.closeY },
+      ...extendedPoints
+    ]
+  }
+
+  // Append target port endpoint
+  if (edge.targetPort) {
+    const useTargetFar = edge.toPort === 'T' || edge.toPort === 'L'
+    if (useTargetFar && edge.targetPort.farX !== undefined && edge.targetPort.farY !== undefined) {
+      extendedPoints = [
+        ...extendedPoints,
+        { x: edge.targetPort.farX, y: edge.targetPort.farY }
+      ]
+    } else if (edge.targetPort.closeX !== undefined && edge.targetPort.closeY !== undefined) {
+      extendedPoints = [
+        ...extendedPoints,
+        { x: edge.targetPort.closeX, y: edge.targetPort.closeY }
+      ]
+    }
+  }
+
   // Calculate shortened path if there's an arrowhead
-  let pathPoints = edge.points
+  let pathPoints = extendedPoints
   let arrowSvg = ''
 
-  if (hasArrow && edge.points.length >= 2) {
-    const lastFlat = edge.points[edge.points.length - 1]
-    const prevFlat = edge.points[edge.points.length - 2]
+  if (hasArrow && extendedPoints.length >= 2) {
+    const lastFlat = extendedPoints[extendedPoints.length - 1]
+    const prevFlat = extendedPoints[extendedPoints.length - 2]
 
-    // Calculate direction in flat 2D space (before projection)
+    // Calculate direction in flat 2D space
     const dx = lastFlat.x - prevFlat.x
     const dy = lastFlat.y - prevFlat.y
     const len = Math.sqrt(dx * dx + dy * dy)
 
     if (len > 0) {
-      // Normalize direction in flat space
+      // Normalize direction
       const nx = dx / len
       const ny = dy / len
 
@@ -743,54 +764,38 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
         x: lastFlat.x - nx * arrowLen,
         y: lastFlat.y - ny * arrowLen
       }
-      pathPoints = [...edge.points.slice(0, -1), shortenedLast]
+      pathPoints = [...extendedPoints.slice(0, -1), shortenedLast]
 
-      // Perpendicular in flat space (for arrow base width)
+      // Perpendicular (for arrow base width)
       const px = -ny
       const py = nx
 
-      // Define arrow triangle vertices in 3D space (at center height of boxes)
-      // Tip is AT the endpoint (which already has isoGap from layout)
-      const tip3D = { x: lastFlat.x, y: lastFlat.y, z: edgeZ }
-
-      // Base center is behind the tip
+      // Arrow triangle vertices in flat space
+      const tipX = lastFlat.x
+      const tipY = lastFlat.y
       const baseCenterX = lastFlat.x - nx * arrowLen
       const baseCenterY = lastFlat.y - ny * arrowLen
-
-      // Left and right base vertices (perpendicular to direction)
-      const left3D = {
-        x: baseCenterX + px * arrowWidth,
-        y: baseCenterY + py * arrowWidth,
-        z: edgeZ
-      }
-      const right3D = {
-        x: baseCenterX - px * arrowWidth,
-        y: baseCenterY - py * arrowWidth,
-        z: edgeZ
-      }
-
-      // Project all vertices through isometric projection
-      const tipIso = isoProject(tip3D.x, tip3D.y, tip3D.z)
-      const leftIso = isoProject(left3D.x, left3D.y, left3D.z)
-      const rightIso = isoProject(right3D.x, right3D.y, right3D.z)
+      const leftX = baseCenterX + px * arrowWidth
+      const leftY = baseCenterY + py * arrowWidth
+      const rightX = baseCenterX - px * arrowWidth
+      const rightY = baseCenterY - py * arrowWidth
 
       arrowSvg = `<polygon
-        points="${tipIso.sx},${tipIso.sy} ${leftIso.sx},${leftIso.sy} ${rightIso.sx},${rightIso.sy}"
+        points="${tipX},${tipY} ${leftX},${leftY} ${rightX},${rightY}"
         fill="${opts.edgeStroke}"
         class="iso-arrow"
       />`
     }
   }
 
-  // Project path points to isometric
-  const isoPoints = pathPoints.map(p => isoProject(p.x, p.y, edgeZ))
-  const pathD = isoPoints
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.sx} ${p.sy}`)
+  // Create path from flat coordinates
+  const pathD = pathPoints
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
     .join(' ')
 
   const { strokeDasharray, strokeWidth } = getEdgeStyle(edge)
 
-  let svg = `<path
+  let edgeContent = `<path
     class="edge iso-edge"
     data-from="${edge.from}"
     data-to="${edge.to}"
@@ -801,37 +806,29 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
     stroke-dasharray="${strokeDasharray}"
   />`
 
-  // Draw bridge/hop indicators at crossings in isometric space
+  // Draw bridge/hop indicators at crossings in flat space
   if (edge.crossings && edge.crossings.length > 0) {
     const bridgeRadius = 6
     for (const crossing of edge.crossings) {
-      // Project crossing point and bridge ends to isometric
-      const leftFlat = { x: crossing.x - bridgeRadius, y: crossing.y }
-      const rightFlat = { x: crossing.x + bridgeRadius, y: crossing.y }
-      const centerFlat = { x: crossing.x, y: crossing.y }
-
-      const leftIso = isoProject(leftFlat.x, leftFlat.y, edgeZ)
-      const rightIso = isoProject(rightFlat.x, rightFlat.y, edgeZ)
-      const centerIso = isoProject(centerFlat.x, centerFlat.y, edgeZ)
-
-      // For isometric, we approximate the bridge arc with a quadratic curve
-      // The peak of the arc rises above the crossing point
-      const peakIso = isoProject(centerFlat.x, centerFlat.y, edgeZ + bridgeRadius)
+      const leftX = crossing.x - bridgeRadius
+      const rightX = crossing.x + bridgeRadius
+      const centerY = crossing.y
+      const peakY = centerY - bridgeRadius / 2
 
       // White background to "erase" the line underneath
-      svg += `<line
-        x1="${leftIso.sx}"
-        y1="${leftIso.sy}"
-        x2="${rightIso.sx}"
-        y2="${rightIso.sy}"
+      edgeContent += `<line
+        x1="${leftX}"
+        y1="${centerY}"
+        x2="${rightX}"
+        y2="${centerY}"
         stroke="white"
         stroke-width="${strokeWidth + 4}"
       />`
 
-      // Draw a small arc "bridge" over the crossing using quadratic bezier
-      svg += `<path
+      // Draw a small arc "bridge" over the crossing
+      edgeContent += `<path
         class="edge-bridge iso-bridge"
-        d="M ${leftIso.sx} ${leftIso.sy} Q ${peakIso.sx} ${peakIso.sy} ${rightIso.sx} ${rightIso.sy}"
+        d="M ${leftX} ${centerY} Q ${crossing.x} ${peakY} ${rightX} ${centerY}"
         fill="none"
         stroke="${opts.edgeStroke}"
         stroke-width="${strokeWidth}"
@@ -839,29 +836,25 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
     }
   }
 
-  svg += arrowSvg
+  edgeContent += arrowSvg
 
   // Show edge label or debug label
   const labelToShow = edgeLabel || edge.label
-  if (labelToShow && isoPoints.length >= 2) {
-    const midIdx = Math.floor(isoPoints.length / 2)
-    const midPoint = isoPoints[midIdx]
-    // Apply isometric transform to edge labels too
-    const cos30 = 0.866
-    const sin30 = 0.5
-    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, ${midPoint.sx}, ${midPoint.sy - 8})`
-    svg += `<text
-      x="0"
-      y="0"
+  if (labelToShow && pathPoints.length >= 2) {
+    const midIdx = Math.floor(pathPoints.length / 2)
+    const midPoint = pathPoints[midIdx]
+    edgeContent += `<text
+      x="${midPoint.x}"
+      y="${midPoint.y - 8}"
       text-anchor="middle"
       font-family="${opts.fontFamily}"
       font-size="${opts.fontSize - 2}"
       fill="${edgeLabel ? '#e44' : '#666'}"
-      transform="${isoMatrix}"
     >${escapeHtml(labelToShow)}</text>`
   }
 
-  return svg
+  // Wrap everything in a group with isometric transform
+  return `<g transform="${isoMatrix}">${edgeContent}</g>`
 }
 
 /**
@@ -907,6 +900,8 @@ function getIsoBounds(graph: Graph): { minX: number; minY: number; maxX: number;
  */
 export function renderToSvg(graph: Graph, options: RenderOptions = {}): string {
   const opts = { ...DEFAULT_OPTIONS, ...options }
+
+  console.log(`[RENDER] viewMode=${opts.viewMode}, using ${opts.viewMode === 'iso' ? 'renderIsoSvg' : 'renderFlatSvg'}`)
 
   if (opts.viewMode === 'iso') {
     return renderIsoSvg(graph, opts)

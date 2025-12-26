@@ -281,10 +281,23 @@ function DiagramViewer() {
           })
           // Restore original isSubgraph state so renderer knows it's a subgraph
           node.isSubgraph = metadata.originalIsSubgraph
+
+          // Debug logging
+          if (metadata._collapsed) {
+            console.log(`Restored collapsed node ${nodeId}:`, {
+              isSubgraph: node.isSubgraph,
+              _collapsed: (node as any)._collapsed,
+              _hasChildren: (node as any)._hasChildren,
+              width: node.width,
+              height: node.height
+            })
+          }
         }
       }
 
+      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}`)
       const svg = render(filteredGraph, { viewMode, showPorts })
+      console.log(`Render completed, svg length=${svg.length}`)
       setSvg(svg)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
@@ -381,11 +394,11 @@ function DiagramViewer() {
     // Find the clicked SVG element
     const target = e.target as SVGElement
 
-    // Look for a subgraph node by walking up the DOM tree
+    // Look for a collapse icon by walking up the DOM tree
     let element: SVGElement | null = target
     while (element && element.tagName !== 'svg') {
-      if (element.classList?.contains('subgraph') || element.classList?.contains('node')) {
-        const nodeId = element.getAttribute('data-id')
+      if (element.classList?.contains('collapse-icon')) {
+        const nodeId = element.getAttribute('data-node-id')
         if (nodeId) {
           const node = graph.nodes.get(nodeId)
           if (node?.isSubgraph) {
@@ -394,6 +407,7 @@ function DiagramViewer() {
             return
           }
         }
+        break
       }
       element = element.parentElement as SVGElement | null
     }
@@ -733,7 +747,6 @@ function DiagramViewer() {
                     dangerouslySetInnerHTML={{ __html: svg }}
                     className="diagram-container"
                     onClick={handleDiagramClick}
-                    style={{ cursor: 'pointer' }}
                   />
                 </div>
               )}

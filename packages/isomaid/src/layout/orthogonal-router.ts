@@ -22,6 +22,7 @@ interface ConnectionPoint {
   y: number
   side: Side
   waypoint: { x: number; y: number }  // Point edge must pass through (standoff)
+  port?: Port  // The actual port object with close/far coordinates
 }
 
 interface BoundingBox {
@@ -62,85 +63,68 @@ function sideToPortSide(side: Side): PortSide {
 
 /**
  * Find best available port on a specific side of a node
- * Prefers unused ports, then finds closest port to target
+ * Priority order: center first, then right/top, then left/bottom
+ * Always prefers unused ports over used ones
  */
 function getBestPortOnSide(
   node: Node,
   side: Side,
-  targetX: number,
-  targetY: number,
+  _targetX: number,
+  _targetY: number,
   graph: Graph
 ): Port | undefined {
   if (!node.ports) return undefined
   const portSide = sideToPortSide(side)
 
-  // Get all ports on this side
-  const portsOnSide = node.ports.filter(p => p.side === portSide)
+  // Get all ports on this side, maintaining their original index
+  const portsOnSide = node.ports
+    .map((p, idx) => ({ port: p, originalIndex: idx }))
+    .filter(item => item.port.side === portSide)
+
   if (portsOnSide.length === 0) return undefined
 
-  // Find which ports are already allocated
-  const usedPorts = new Set<string>()
+  // Find which ports are already allocated by checking sourcePort/targetPort on edges
+  // Use the port's original index in node.ports array as a stable identifier
+  const usedPortIndices = new Set<number>()
   for (const edge of graph.edges) {
-    if (edge.from === node.id && edge.fromPort === portSide) {
-      // Find which specific port (by position)
-      const fromNode = graph.nodes.get(edge.from)
-      if (fromNode?.ports && edge.points && edge.points.length > 0) {
-        const firstPoint = edge.points[0]
-        // Find port closest to first edge point
-        const port = fromNode.ports
-          .filter(p => p.side === portSide)
-          .reduce((closest, p) => {
-            if (!p.x || !p.y) return closest
-            const dist = Math.hypot(p.x - firstPoint.x, p.y - firstPoint.y)
-            const closestDist = closest?.x && closest?.y
-              ? Math.hypot(closest.x - firstPoint.x, closest.y - firstPoint.y)
-              : Infinity
-            return dist < closestDist ? p : closest
-          }, null as Port | null)
-        if (port?.x !== undefined && port?.y !== undefined) {
-          usedPorts.add(`${node.id}-${port.x}-${port.y}`)
-        }
-      }
+    if (edge.sourcePort && edge.from === node.id && node.ports) {
+      const idx = node.ports.indexOf(edge.sourcePort)
+      if (idx >= 0) usedPortIndices.add(idx)
     }
-    if (edge.to === node.id && edge.toPort === portSide) {
-      // Find which specific port (by position)
-      const toNode = graph.nodes.get(edge.to)
-      if (toNode?.ports && edge.points && edge.points.length > 0) {
-        const lastPoint = edge.points[edge.points.length - 1]
-        const port = toNode.ports
-          .filter(p => p.side === portSide)
-          .reduce((closest, p) => {
-            if (!p.x || !p.y) return closest
-            const dist = Math.hypot(p.x - lastPoint.x, p.y - lastPoint.y)
-            const closestDist = closest?.x && closest?.y
-              ? Math.hypot(closest.x - lastPoint.x, closest.y - lastPoint.y)
-              : Infinity
-            return dist < closestDist ? p : closest
-          }, null as Port | null)
-        if (port?.x !== undefined && port?.y !== undefined) {
-          usedPorts.add(`${node.id}-${port.x}-${port.y}`)
-        }
-      }
+    if (edge.targetPort && edge.to === node.id && node.ports) {
+      const idx = node.ports.indexOf(edge.targetPort)
+      if (idx >= 0) usedPortIndices.add(idx)
     }
   }
 
-  // First try to find an unused port closest to target
-  const unusedPorts = portsOnSide.filter(p => {
-    if (!p.x || !p.y) return false
-    return !usedPorts.has(`${node.id}-${p.x}-${p.y}`)
-  })
+  // Define priority order based on port position within the side
+  // Ports are generated in elk.ts in order: left/top, center, right/bottom
+  // For T/B (3 ports): indices 0=left, 1=center, 2=right → priority [1, 2, 0]
+  // For L/R (2 ports): indices 0=top, 1=bottom → priority [0, 1]
+  let priorityOrder: number[]
+  if (portSide === 'T' || portSide === 'B') {
+    // 3 ports: center (1), right (2), left (0)
+    priorityOrder = [1, 2, 0]
+  } else {
+    // 2 ports: top (0), bottom (1)
+    priorityOrder = [0, 1]
+  }
 
-  const candidatePorts = unusedPorts.length > 0 ? unusedPorts : portsOnSide
+  // Map priority order to actual ports (by their position within portsOnSide)
+  // portsOnSide preserves the generation order from elk.ts
+  const orderedPorts = priorityOrder
+    .filter(i => i < portsOnSide.length)
+    .map(i => portsOnSide[i])
 
-  // Find closest port to target
-  return candidatePorts.reduce((closest, p) => {
-    if (!p.x || !p.y) return closest
-    const dist = Math.hypot(p.x - targetX, p.y - targetY)
-    const closestDist = closest?.x && closest?.y
-      ? Math.hypot(closest.x - targetX, closest.y - targetY)
-      : Infinity
-    return dist < closestDist ? p : closest
-  }, null as Port | null) || portsOnSide[0]
+  // Find first unused port in priority order
+  for (const item of orderedPorts) {
+    if (!usedPortIndices.has(item.originalIndex)) {
+      return item.port
+    }
+  }
+
+  // All ports used, return first in priority order
+  return orderedPorts[0]?.port ?? portsOnSide[0]?.port
 }
 
 /**
@@ -230,9 +214,10 @@ function getConnectionPoints(
   }
 
   // Routing uses corner positions as both endpoints and waypoints
+  // Include port objects so renderer can access close/far coordinates
   return {
-    from: { x: fromX, y: fromY, side: fromSide, waypoint: { x: fromX, y: fromY } },
-    to: { x: toX, y: toY, side: toSide, waypoint: { x: toX, y: toY } },
+    from: { x: fromX, y: fromY, side: fromSide, waypoint: { x: fromX, y: fromY }, port: fromPort ?? undefined },
+    to: { x: toX, y: toY, side: toSide, waypoint: { x: toX, y: toY }, port: toPort ?? undefined },
   }
 }
 
@@ -386,6 +371,10 @@ export function routeEdgesOrthogonal(
     edge.fromPort = sideToPortSide(fromPt.side)
     edge.toPort = sideToPortSide(toPt.side)
 
+    // Save full port objects for unified edge rendering (close/far coordinates)
+    edge.sourcePort = fromPt.port
+    edge.targetPort = toPt.port
+
     // Create fresh grid for this edge
     const edgeGrid = grid.clone()
 
@@ -426,16 +415,6 @@ export function routeEdgesOrthogonal(
         }
       }
     }
-
-    // Build simple orthogonal path without A* for now
-    // A* was causing diagonal issues due to grid quantization
-    //
-    // Path structure:
-    // 1. Edge point (on node surface)
-    // 2. Waypoint (standoff from node)
-    // 3. Corner points (orthogonal routing between waypoints)
-    // 4. Target waypoint
-    // 5. Target edge point
 
     // Build orthogonal path between the two waypoints
     // Choose direction based on which way we're primarily going
@@ -518,7 +497,12 @@ function makeOrthogonal(points: { x: number; y: number }[]): { x: number; y: num
 
 /**
  * Build a simple orthogonal path between two waypoints
- * Goes horizontal first, then vertical (or vice versa based on direction)
+ * Places turns centrally between source and target, with bias toward source
+ *
+ * Central turn strategy:
+ * - Calculate midpoint between from and to
+ * - Bias slightly toward source (40% from source, 60% toward target)
+ * - This keeps the routing balanced but visually favors source proximity
  */
 function buildOrthogonalPath(
   from: { x: number; y: number },
@@ -533,13 +517,30 @@ function buildOrthogonalPath(
     return [from, to]
   }
 
-  // Need a corner point
+  // Bias factor: 0.5 = center, lower = closer to source
+  const bias = 0.4
+
+  // Need corner points - place turns centrally with source bias
   if (preferHorizontalFirst) {
-    // Go horizontal first, then vertical
-    return [from, { x: to.x, y: from.y }, to]
+    // Go horizontal first (X changes), then vertical (Y changes)
+    // Turn line is at midpoint X between from.x and to.x, biased toward source
+    const midX = from.x + (to.x - from.x) * bias
+    return [
+      from,
+      { x: midX, y: from.y },  // First turn: go horizontal to midpoint
+      { x: midX, y: to.y },    // Second turn: go vertical at midpoint
+      to
+    ]
   } else {
-    // Go vertical first, then horizontal
-    return [from, { x: from.x, y: to.y }, to]
+    // Go vertical first (Y changes), then horizontal (X changes)
+    // Turn line is at midpoint Y between from.y and to.y, biased toward source
+    const midY = from.y + (to.y - from.y) * bias
+    return [
+      from,
+      { x: from.x, y: midY },  // First turn: go vertical to midpoint
+      { x: to.x, y: midY },    // Second turn: go horizontal at midpoint
+      to
+    ]
   }
 }
 

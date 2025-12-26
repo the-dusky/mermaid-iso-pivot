@@ -31,10 +31,14 @@ const DEFAULT_OPTIONS: Required<LayoutOptions> = {
   viewMode: 'flat',
 }
 
-/** Default node dimensions based on shape */
-function getNodeDimensions(node: Node): { width: number; height: number } {
-  const labelLength = node.label.length
-  const baseWidth = Math.max(80, labelLength * 10 + 40)
+/** Calculate base width for a node label */
+function getBaseWidth(label: string): number {
+  return Math.max(80, label.length * 10 + 40)
+}
+
+/** Default node dimensions based on shape, with optional uniform width override */
+function getNodeDimensions(node: Node, uniformWidth?: number): { width: number; height: number } {
+  const baseWidth = uniformWidth ?? getBaseWidth(node.label)
 
   switch (node.shape) {
     case 'cylinder':
@@ -47,6 +51,30 @@ function getNodeDimensions(node: Node): { width: number; height: number } {
     default:
       return { width: baseWidth, height: 40 }
   }
+}
+
+/** Calculate uniform width for all regular nodes (not subgraphs) */
+function calculateUniformWidth(graph: Graph): number {
+  let maxWidth = 80  // Minimum width
+
+  for (const node of graph.nodes.values()) {
+    // Skip subgraphs - they size to their contents
+    if (node.isSubgraph) continue
+
+    const baseWidth = getBaseWidth(node.label)
+
+    // Account for shape-specific width additions
+    let effectiveWidth = baseWidth
+    if (node.shape === 'diamond') {
+      effectiveWidth = baseWidth + 40
+    } else if (node.shape === 'circle') {
+      effectiveWidth = Math.max(60, baseWidth)
+    }
+
+    maxWidth = Math.max(maxWidth, effectiveWidth)
+  }
+
+  return maxWidth
 }
 
 /**
@@ -206,6 +234,9 @@ function findLowestCommonAncestor(
 function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
   const processedNodes = new Set<string>()
 
+  // Calculate uniform width for all regular nodes (consistency across views)
+  const uniformWidth = calculateUniformWidth(graph)
+
   // Helper to convert a node (and its children) to ELK format
   function convertNode(nodeId: string): ElkNode | null {
     if (processedNodes.has(nodeId)) return null
@@ -214,7 +245,10 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
     const node = graph.nodes.get(nodeId)
     if (!node) return null
 
-    const dims = getNodeDimensions(node)
+    // Use uniform width for regular nodes, let subgraphs size naturally
+    const dims = node.isSubgraph
+      ? getNodeDimensions(node)
+      : getNodeDimensions(node, uniformWidth)
 
     const elkNode: ElkNode = {
       id: nodeId,
@@ -231,6 +265,9 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
         'elk.padding': `[top=${opts.padding + 20},left=${opts.padding},bottom=${opts.padding + 20},right=${opts.padding}]`,
         'elk.spacing.nodeNode': String(opts.nodeSpacing),
         'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.layerSpacing),
+        // Center children within the subgraph
+        'elk.contentAlignment': 'H_CENTER V_CENTER',
+        'elk.alignment': 'CENTER',
       }
 
       for (const childId of node.children) {
@@ -273,6 +310,8 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.spacing.edgeEdgeBetweenLayers': '15',
       'elk.layered.spacing.edgeNodeBetweenLayers': '15',
+      // Center nodes within layers
+      'elk.alignment': 'CENTER',
     },
     children: elkNodes,
     edges: allEdges,

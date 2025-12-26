@@ -135,6 +135,10 @@ export interface Edge {
   fromPort?: PortSide
   toPort?: PortSide
 
+  // Port coordinate references (populated by router for unified edge rendering)
+  sourcePort?: Port  // Full port object for source connection
+  targetPort?: Port  // Full port object for target connection
+
   // Grid coordinates for edge vertices (primary positioning)
   gridPoints?: GridCoord[]        // Vertices in grid units (including bends)
   labelBounds?: LabelBounds       // Label collision box
