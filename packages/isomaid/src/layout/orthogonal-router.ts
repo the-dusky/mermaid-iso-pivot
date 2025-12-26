@@ -1,13 +1,15 @@
 /**
  * Orthogonal edge router using A* pathfinding
  *
- * Routes edges around nodes/subgraphs as obstacles.
+ * Routes edges around nodes/subgraphs as obstacles using geofence zones.
+ * Geofences define exclusion zones around nodes with port corridors as openings.
  * Connects to appropriate sides of nodes based on relative positions.
  * Detects edge crossings for bridge rendering.
  */
 
 import PF from 'pathfinding'
 import type { Graph, Node, Edge, Port, PortSide } from '../model/types'
+import { generateGeofences, type NodeGeofence, type LabelGeofence } from './geofence'
 
 // Grid resolution - smaller = more precise but slower
 const GRID_CELL_SIZE = 8
@@ -334,13 +336,13 @@ export function routeEdgesOrthogonal(
     y: minY + gy * GRID_CELL_SIZE + GRID_CELL_SIZE / 2,
   })
 
-  // Mark obstacles on grid
-  const markObstacle = (node: Node, grid: PF.Grid) => {
-    const bounds = getNodeBounds(node, OBSTACLE_PADDING)
-    if (!bounds) return
+  // Generate geofences for obstacle avoidance
+  const geofenceData = generateGeofences(graph)
 
-    const topLeft = toGrid(bounds.left, bounds.top)
-    const bottomRight = toGrid(bounds.right, bounds.bottom)
+  // Mark a rectangular area as blocked
+  const markRect = (grid: PF.Grid, left: number, top: number, right: number, bottom: number) => {
+    const topLeft = toGrid(left, top)
+    const bottomRight = toGrid(right, bottom)
 
     for (let gx = topLeft.gx; gx <= bottomRight.gx; gx++) {
       for (let gy = topLeft.gy; gy <= bottomRight.gy; gy++) {
@@ -349,6 +351,53 @@ export function routeEdgesOrthogonal(
         }
       }
     }
+  }
+
+  // Mark a rectangular area as walkable (for port corridors)
+  const clearRect = (grid: PF.Grid, left: number, top: number, right: number, bottom: number) => {
+    const topLeft = toGrid(left, top)
+    const bottomRight = toGrid(right, bottom)
+
+    for (let gx = topLeft.gx; gx <= bottomRight.gx; gx++) {
+      for (let gy = topLeft.gy; gy <= bottomRight.gy; gy++) {
+        if (gx >= 0 && gx < gridWidth && gy >= 0 && gy < gridHeight) {
+          grid.setWalkableAt(gx, gy, true)
+        }
+      }
+    }
+  }
+
+  // Mark geofence as obstacle with port corridor openings
+  const markGeofence = (geofence: NodeGeofence, grid: PF.Grid) => {
+    const { outer, inner, openings } = geofence
+
+    // Mark the geofence band (area between outer and inner bounds)
+    // Top band
+    markRect(grid, outer.left, outer.top, outer.right, inner.top)
+    // Bottom band
+    markRect(grid, outer.left, inner.bottom, outer.right, outer.bottom)
+    // Left band
+    markRect(grid, outer.left, inner.top, inner.left, inner.bottom)
+    // Right band
+    markRect(grid, inner.right, inner.top, outer.right, inner.bottom)
+
+    // Clear port corridor openings (these are walkable paths through the geofence)
+    for (const opening of openings) {
+      clearRect(grid, opening.x, opening.y, opening.x + opening.width, opening.y + opening.height)
+    }
+  }
+
+  // Mark label geofence as obstacle (simple rectangle, no openings)
+  const markLabelGeofence = (labelGeofence: LabelGeofence, grid: PF.Grid) => {
+    const { bounds } = labelGeofence
+    markRect(grid, bounds.left, bounds.top, bounds.right, bounds.bottom)
+  }
+
+  // Legacy function for nodes without geofences (fallback)
+  const markObstacle = (node: Node, grid: PF.Grid) => {
+    const bounds = getNodeBounds(node, OBSTACLE_PADDING)
+    if (!bounds) return
+    markRect(grid, bounds.left, bounds.top, bounds.right, bounds.bottom)
   }
 
   // Create finder with orthogonal movement only
@@ -378,10 +427,29 @@ export function routeEdgesOrthogonal(
     // Create fresh grid for this edge
     const edgeGrid = grid.clone()
 
-    // Mark all nodes as obstacles EXCEPT source and target
+    // Mark geofences as obstacles EXCEPT for source and target nodes
+    // This allows edges to route through port corridors while avoiding geofence zones
+    for (const [nodeId, geofence] of geofenceData.nodeGeofences) {
+      if (nodeId !== edge.from && nodeId !== edge.to) {
+        markGeofence(geofence, edgeGrid)
+      }
+    }
+
+    // Mark label geofences as obstacles (protect text from edge crossings)
+    // Skip labels for source/target nodes to allow edges to connect
+    for (const labelGeofence of geofenceData.labelGeofences) {
+      const labelNodeId = labelGeofence.labelId.replace('label-', '').replace('edge-', '')
+      if (labelNodeId !== edge.from && labelNodeId !== edge.to) {
+        markLabelGeofence(labelGeofence, edgeGrid)
+      }
+    }
+
+    // Fallback: mark nodes without geofences as simple obstacles
     for (const node of graph.nodes.values()) {
       if (node.id !== edge.from && node.id !== edge.to) {
-        markObstacle(node, edgeGrid)
+        if (!geofenceData.nodeGeofences.has(node.id)) {
+          markObstacle(node, edgeGrid)
+        }
       }
     }
 
