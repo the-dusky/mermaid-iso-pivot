@@ -68,6 +68,49 @@ export interface GeofenceData {
 /** Width of port corridors through geofence (pixels) */
 const PORT_CORRIDOR_WIDTH = 20
 
+/** Padding around text labels */
+const TEXT_PADDING = 8
+
+/** Approximate character width for label sizing */
+const CHAR_WIDTH = 8
+
+/** Line height for labels */
+const LINE_HEIGHT = 18
+
+/**
+ * Calculate text label bounds for a node
+ * Returns pixel coordinates for the label bounding box
+ */
+function calculateLabelBounds(node: Node): { left: number; right: number; top: number; bottom: number } | null {
+  if (!node.label || node.label.length === 0) return null
+  if (node.x === undefined || node.y === undefined) return null
+
+  const labelWidth = node.label.length * CHAR_WIDTH + TEXT_PADDING * 2
+  const labelHeight = LINE_HEIGHT + TEXT_PADDING
+
+  if (node.isSubgraph) {
+    // Subgraph labels are at bottom of container
+    const nodeHeight = node.height || 40
+    const textOffsetY = nodeHeight / 2 - 16  // Matches svg.ts positioning
+    const labelCenterY = node.y + textOffsetY
+
+    return {
+      left: node.x - labelWidth / 2,
+      right: node.x + labelWidth / 2,
+      top: labelCenterY - labelHeight / 2,
+      bottom: labelCenterY + labelHeight / 2,
+    }
+  } else {
+    // Regular node labels are centered
+    return {
+      left: node.x - labelWidth / 2,
+      right: node.x + labelWidth / 2,
+      top: node.y - labelHeight / 2,
+      bottom: node.y + labelHeight / 2,
+    }
+  }
+}
+
 /**
  * Generate geofence for a single node
  */
@@ -192,45 +235,55 @@ export function generateGeofences(graph: Graph): GeofenceData {
   const labelGeofences: LabelGeofence[] = []
 
   for (const node of graph.nodes.values()) {
-    // Skip subgraphs - edges can pass through them
-    if (node.isSubgraph) continue
-
-    const geofence = generateNodeGeofence(node)
-    if (geofence) {
-      nodeGeofences.set(node.id, geofence)
+    // Generate node geofence (with ports) for regular nodes only
+    // Subgraphs don't get node geofences - edges can pass through them
+    if (!node.isSubgraph) {
+      const geofence = generateNodeGeofence(node)
+      if (geofence) {
+        nodeGeofences.set(node.id, geofence)
+      }
     }
 
-    // Add label geofence if node has substantial label
-    if (node.label && node.label.length > 0 && node.labelBounds) {
+    // Generate label geofence for ALL nodes including subgraphs
+    // This protects text from being crossed by edges
+    const labelBounds = calculateLabelBounds(node)
+    if (labelBounds) {
       labelGeofences.push({
         labelId: `label-${node.id}`,
         bounds: {
           id: `label-geofence-${node.id}`,
           type: 'label',
-          left: node.labelBounds.center.gx * 20 - (node.labelBounds.width * 20) / 2,
-          right: node.labelBounds.center.gx * 20 + (node.labelBounds.width * 20) / 2,
-          top: node.labelBounds.center.gy * 20 - (node.labelBounds.height * 20) / 2,
-          bottom: node.labelBounds.center.gy * 20 + (node.labelBounds.height * 20) / 2,
+          left: labelBounds.left - TEXT_PADDING,
+          right: labelBounds.right + TEXT_PADDING,
+          top: labelBounds.top - TEXT_PADDING,
+          bottom: labelBounds.bottom + TEXT_PADDING,
         },
-        padding: 5,
+        padding: TEXT_PADDING,
       })
     }
   }
 
   // Add edge label geofences
   for (const edge of graph.edges) {
-    if (edge.label && edge.labelBounds) {
+    if (edge.label && edge.points && edge.points.length >= 2) {
+      // Calculate edge label position (midpoint of path)
+      const midIdx = Math.floor(edge.points.length / 2)
+      const midPoint = edge.points[midIdx]
+
+      const labelWidth = edge.label.length * CHAR_WIDTH + TEXT_PADDING * 2
+      const labelHeight = LINE_HEIGHT + TEXT_PADDING
+
       labelGeofences.push({
-        labelId: `label-${edge.id}`,
+        labelId: `label-edge-${edge.id}`,
         bounds: {
-          id: `label-geofence-${edge.id}`,
+          id: `label-geofence-edge-${edge.id}`,
           type: 'label',
-          left: edge.labelBounds.center.gx * 20 - (edge.labelBounds.width * 20) / 2,
-          right: edge.labelBounds.center.gx * 20 + (edge.labelBounds.width * 20) / 2,
-          top: edge.labelBounds.center.gy * 20 - (edge.labelBounds.height * 20) / 2,
-          bottom: edge.labelBounds.center.gy * 20 + (edge.labelBounds.height * 20) / 2,
+          left: midPoint.x - labelWidth / 2 - TEXT_PADDING,
+          right: midPoint.x + labelWidth / 2 + TEXT_PADDING,
+          top: midPoint.y - labelHeight / 2 - TEXT_PADDING - 8, // offset above line
+          bottom: midPoint.y + labelHeight / 2 + TEXT_PADDING - 8,
         },
-        padding: 5,
+        padding: TEXT_PADDING,
       })
     }
   }

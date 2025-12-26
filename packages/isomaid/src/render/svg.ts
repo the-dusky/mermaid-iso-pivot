@@ -406,7 +406,62 @@ function getGeofencePatternDef(): string {
   return `<pattern id="geofence-pattern" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
     <rect width="5" height="10" fill="#dc2626" />
     <rect x="5" width="5" height="10" fill="#fca5a5" />
+  </pattern>
+  <pattern id="label-geofence-pattern" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
+    <rect width="4" height="8" fill="#f97316" />
+    <rect x="4" width="4" height="8" fill="#fed7aa" />
   </pattern>`
+}
+
+/**
+ * Render label geofence (flat mode)
+ * Simple rectangle for text protection
+ */
+function renderFlatLabelGeofence(labelGeofence: { labelId: string; bounds: { left: number; right: number; top: number; bottom: number } }): string {
+  const { bounds } = labelGeofence
+  const width = bounds.right - bounds.left
+  const height = bounds.bottom - bounds.top
+
+  return `<rect
+    class="label-geofence"
+    data-label-id="${labelGeofence.labelId}"
+    x="${bounds.left}"
+    y="${bounds.top}"
+    width="${width}"
+    height="${height}"
+    fill="url(#label-geofence-pattern)"
+    fill-opacity="0.3"
+    stroke="#f97316"
+    stroke-width="1"
+    stroke-dasharray="3,2"
+  />`
+}
+
+/**
+ * Render label geofence (iso mode)
+ */
+function renderIsoLabelGeofence(labelGeofence: { labelId: string; bounds: { left: number; right: number; top: number; bottom: number } }): string {
+  const { bounds } = labelGeofence
+  const cos30 = 0.866
+  const sin30 = 0.5
+  const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+
+  const width = bounds.right - bounds.left
+  const height = bounds.bottom - bounds.top
+
+  return `<g class="label-geofence iso-label-geofence" data-label-id="${labelGeofence.labelId}" transform="${isoMatrix}">
+    <rect
+      x="${bounds.left}"
+      y="${bounds.top}"
+      width="${width}"
+      height="${height}"
+      fill="url(#label-geofence-pattern)"
+      fill-opacity="0.3"
+      stroke="#f97316"
+      stroke-width="1"
+      stroke-dasharray="3,2"
+    />
+  </g>`
 }
 
 /**
@@ -1089,10 +1144,14 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
 
   // Generate geofences if enabled
   let geofencesSvg = ''
+  let labelGeofencesSvg = ''
   if (opts.showGeofences) {
     const geofenceData = generateGeofences(graph)
     geofencesSvg = Array.from(geofenceData.nodeGeofences.values())
       .map(gf => renderFlatGeofence(gf))
+      .join('\n')
+    labelGeofencesSvg = geofenceData.labelGeofences
+      .map(lf => renderFlatLabelGeofence(lf))
       .join('\n')
   }
 
@@ -1128,6 +1187,7 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
       ${gridSvg}
       <g class="subgraphs">${subgraphsSvg}</g>
       <g class="geofences">${geofencesSvg}</g>
+      <g class="label-geofences">${labelGeofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
     </g>
@@ -1182,10 +1242,14 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
 
   // Generate geofences if enabled
   let geofencesSvg = ''
+  let labelGeofencesSvg = ''
   if (opts.showGeofences) {
     const geofenceData = generateGeofences(graph)
     geofencesSvg = Array.from(geofenceData.nodeGeofences.values())
       .map(gf => renderIsoGeofence(gf))
+      .join('\n')
+    labelGeofencesSvg = geofenceData.labelGeofences
+      .map(lf => renderIsoLabelGeofence(lf))
       .join('\n')
   }
 
@@ -1212,6 +1276,7 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
       ${gridSvg}
       <g class="subgraphs">${subgraphsSvg}</g>
       <g class="geofences">${geofencesSvg}</g>
+      <g class="label-geofences">${labelGeofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
     </g>
