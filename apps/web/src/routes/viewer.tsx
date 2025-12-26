@@ -5,9 +5,6 @@ import {
   render,
   createInitialNavState,
   toggleFold,
-  getVisibleNodesInFoldMode,
-  getVisibleEdgesInFoldMode,
-  layoutGraph,
 } from 'isomaid'
 import type { ViewMode, Graph, NavState } from 'isomaid'
 
@@ -212,91 +209,54 @@ function DiagramViewer() {
   }, [viewMode])
 
   // Render current view based on navigation state
+  // Key insight: DON'T re-layout when collapse state changes!
+  // Just mark nodes with collapse metadata and let renderer hide children
   const renderCurrentView = useCallback(async () => {
     if (!graph) return
 
     try {
-      // Get visible nodes and edges based on fold state
-      const visibleNodeIds = getVisibleNodesInFoldMode(graph, navState)
-      const visibleEdges = getVisibleEdgesInFoldMode(graph, navState)
-
-      // Store collapse metadata before layout (layout engine won't preserve custom props)
-      const collapseMetadata = new Map<string, {
-        _collapsed: boolean
-        _hasChildren: boolean
-        originalIsSubgraph: boolean
-      }>()
-
-      // Filter the nodes map to only include visible nodes
-      const filteredNodes = new Map()
-      for (const nodeId of visibleNodeIds) {
+      // Helper to check if any ancestor is collapsed
+      const hasCollapsedAncestor = (nodeId: string): boolean => {
         const node = graph.nodes.get(nodeId)
-        if (node) {
-          // Clear children for collapsed subgraphs to render them as boxes
-          const isCollapsed = navState.collapsed.has(nodeId)
-          const hasChildren = node.isSubgraph && (node.children?.length ?? 0) > 0
-          const isCollapsedSubgraph = isCollapsed && hasChildren
-
-          // Store original isSubgraph state for rendering
-          collapseMetadata.set(nodeId, {
-            _collapsed: isCollapsed,
-            _hasChildren: hasChildren,
-            originalIsSubgraph: node.isSubgraph,
-          })
-
-          // For collapsed subgraphs: mark as NOT a subgraph during layout
-          // so layout engine treats it as a regular node with fixed dimensions
-          filteredNodes.set(nodeId, {
-            ...node,
-            children: isCollapsed ? [] : node.children,
-            isSubgraph: isCollapsedSubgraph ? false : node.isSubgraph,
-            // Force small dimensions for collapsed subgraphs
-            ...(isCollapsedSubgraph ? { width: 120, height: 60 } : {}),
-          })
-        }
+        if (!node?.parent) return false
+        if (navState.collapsed.has(node.parent)) return true
+        return hasCollapsedAncestor(node.parent)
       }
 
-      // Create a filtered graph for layout and rendering
-      const filteredGraph: Graph = {
+      // Create a shallow copy of nodes with collapse metadata added
+      // Keep the full graph structure - don't filter children
+      const nodesWithMetadata = new Map()
+      for (const [nodeId, node] of graph.nodes) {
+        const isCollapsed = navState.collapsed.has(nodeId)
+        const hasChildren = node.isSubgraph && (node.children?.length ?? 0) > 0
+
+        // Check if ANY ancestor is collapsed (so it should be hidden)
+        const ancestorIsCollapsed = hasCollapsedAncestor(nodeId)
+
+        nodesWithMetadata.set(nodeId, {
+          ...node,
+          _collapsed: isCollapsed,
+          _hasChildren: hasChildren,
+          _hidden: ancestorIsCollapsed,  // Hide if any ancestor is collapsed
+        })
+      }
+
+      // Filter edges: hide edges where source or target is hidden
+      const visibleEdges = graph.edges.filter(edge => {
+        const fromNode = nodesWithMetadata.get(edge.from)
+        const toNode = nodesWithMetadata.get(edge.to)
+        return fromNode && toNode && !fromNode._hidden && !toNode._hidden
+      })
+
+      // Create render graph with metadata (no layout recalculation!)
+      const renderGraph: Graph = {
         ...graph,
-        nodes: filteredNodes,
-        rootNodes: visibleNodeIds.filter(id => {
-          const node = graph.nodes.get(id)
-          return !node?.parent
-        }),
+        nodes: nodesWithMetadata,
         edges: visibleEdges,
       }
 
-      // Re-layout the graph with collapsed state to recalculate positions/sizes
-      await layoutGraph(filteredGraph, { viewMode })
-
-      // Re-apply collapse metadata after layout (layout engine may have cleared it)
-      for (const [nodeId, metadata] of collapseMetadata) {
-        const node = filteredGraph.nodes.get(nodeId)
-        if (node) {
-          // Restore metadata for renderer
-          Object.assign(node, {
-            _collapsed: metadata._collapsed,
-            _hasChildren: metadata._hasChildren,
-          })
-          // Restore original isSubgraph state so renderer knows it's a subgraph
-          node.isSubgraph = metadata.originalIsSubgraph
-
-          // Debug logging
-          if (metadata._collapsed) {
-            console.log(`Restored collapsed node ${nodeId}:`, {
-              isSubgraph: node.isSubgraph,
-              _collapsed: (node as any)._collapsed,
-              _hasChildren: (node as any)._hasChildren,
-              width: node.width,
-              height: node.height
-            })
-          }
-        }
-      }
-
       console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}`)
-      const svg = render(filteredGraph, { viewMode, showPorts })
+      const svg = render(renderGraph, { viewMode, showPorts })
       console.log(`Render completed, svg length=${svg.length}`)
       setSvg(svg)
     } catch (err) {

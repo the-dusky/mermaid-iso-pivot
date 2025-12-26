@@ -384,8 +384,8 @@ function applyElkLayout(graph: Graph, elkGraph: ElkNode, opts: Required<LayoutOp
 
   // Generate ports for all nodes
   // Port offset is CONSTANT across view modes - coordinates must match!
-  // Set to accommodate iso depth (ISO_Z_HEIGHT + 5px = 25px)
-  const portOffset = 25
+  // Set to accommodate iso depth (ISO_Z_HEIGHT = 25px) plus clearance
+  const portOffset = 30
   for (const node of graph.nodes.values()) {
     const layerId = node.gridPos?.layer || 'root'
     node.ports = generateNodePorts(node, cellSize, portOffset, layerId)

@@ -53,7 +53,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
 }
 
 // Z-height for isometric node extrusion
-const ISO_Z_HEIGHT = 20
+const ISO_Z_HEIGHT = 25
 
 // Muted color palette for flat subgraphs
 const SUBGRAPH_COLORS = [
@@ -135,10 +135,13 @@ function renderCollapseIcon(
   const iconWorldX = nodeWorldX + iconOffsetX
   const iconWorldY = nodeWorldY + iconOffsetY
 
-  const pos = transform(iconWorldX, iconWorldY, 0)
+  // For collapsed subgraphs in iso mode, elevate the icon to sit on top of the 3D box
+  const isCollapsed = node._collapsed ?? false
+  const zOffset = (useIsoMatrix && isCollapsed) ? ISO_Z_HEIGHT : 0
+
+  const pos = transform(iconWorldX, iconWorldY, zOffset)
 
   const iconSize = 16
-  const isCollapsed = node._collapsed ?? false
 
   // Create icon based on collapsed state
   // Collapsed (+): expand icon
@@ -316,9 +319,9 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
 
   console.log(`[RENDER FLAT] ${node.id}: isSubgraph=${node.isSubgraph}, _collapsed=${nodeExt._collapsed}, _hasChildren=${nodeExt._hasChildren}, isCollapsedSubgraph=${isCollapsedSubgraph}`)
 
-  // Override dimensions for collapsed subgraphs to render as regular nodes
+  // For collapsed subgraphs: keep original dimensions but render as solid box (not container)
   const renderNode: Node = isCollapsedSubgraph
-    ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
+    ? { ...node, isSubgraph: false }  // Keep width/height from expanded layout
     : node
 
   if (isCollapsedSubgraph) {
@@ -419,9 +422,9 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
 
   console.log(`[RENDER ISO] ${node.id}: isSubgraph=${node.isSubgraph}, _collapsed=${nodeExt._collapsed}, _hasChildren=${nodeExt._hasChildren}, isCollapsedSubgraph=${isCollapsedSubgraph}`)
 
-  // Override dimensions for collapsed subgraphs to render as regular nodes with height
+  // For collapsed subgraphs: keep original dimensions but render as solid 3D box
   const renderNode: Node = isCollapsedSubgraph
-    ? { ...node, width: 120, height: 60, isSubgraph: false, x: node.x, y: node.y }
+    ? { ...node, isSubgraph: false }  // Keep width/height from expanded layout
     : node
 
   const isSubgraph = renderNode.isSubgraph || false
@@ -963,6 +966,10 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
   const regularNodes: Node[] = []
 
   for (const node of graph.nodes.values()) {
+    // Skip hidden nodes (children of collapsed subgraphs)
+    const nodeExt = node as Node & { _hidden?: boolean }
+    if (nodeExt._hidden) continue
+
     if (node.isSubgraph) {
       subgraphs.push(node)
     } else {
@@ -1029,6 +1036,10 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
   const regularNodes: Node[] = []
 
   for (const node of graph.nodes.values()) {
+    // Skip hidden nodes (children of collapsed subgraphs)
+    const nodeExt = node as Node & { _hidden?: boolean }
+    if (nodeExt._hidden) continue
+
     if (node.isSubgraph) {
       subgraphs.push(node)
     } else {

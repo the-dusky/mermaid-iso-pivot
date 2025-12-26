@@ -25,7 +25,7 @@ const SIN_ANGLE = Math.sin(ANGLE) // 0.5
 const ISO_SCALE = 1
 
 // Default height for 3D extrusion
-const DEFAULT_Z_HEIGHT = 20
+const DEFAULT_Z_HEIGHT = 25
 
 // Light direction for shading (normalized vector pointing up-right)
 const LIGHT_DIR = { x: 0.5, y: -0.5, z: 1 }
