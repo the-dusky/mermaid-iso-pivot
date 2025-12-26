@@ -43,6 +43,7 @@ const STORAGE_KEY = 'isomaid-editor-source'
 const ZOOM_STORAGE_KEY = 'isomaid-editor-zoom'
 const VIEW_MODE_STORAGE_KEY = 'isomaid-editor-view-mode'
 const SHOW_PORTS_STORAGE_KEY = 'isomaid-editor-show-ports'
+const SHOW_GEOFENCES_STORAGE_KEY = 'isomaid-editor-show-geofences'
 const SPLIT_POSITION_STORAGE_KEY = 'isomaid-editor-split-position'
 const MAX_HISTORY = 100
 
@@ -76,6 +77,15 @@ function DiagramViewer() {
       }
     }
     return true
+  })
+  const [showGeofences, setShowGeofences] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(SHOW_GEOFENCES_STORAGE_KEY)
+      if (saved !== null) {
+        return saved === 'true'
+      }
+    }
+    return false
   })
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -148,6 +158,12 @@ function DiagramViewer() {
       localStorage.setItem(SHOW_PORTS_STORAGE_KEY, String(showPorts))
     }
   }, [showPorts])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SHOW_GEOFENCES_STORAGE_KEY, String(showGeofences))
+    }
+  }, [showGeofences])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -255,15 +271,15 @@ function DiagramViewer() {
         edges: visibleEdges,
       }
 
-      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}`)
-      const svg = render(renderGraph, { viewMode, showPorts })
+      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}`)
+      const svg = render(renderGraph, { viewMode, showPorts, showGeofences })
       console.log(`Render completed, svg length=${svg.length}`)
       setSvg(svg)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
       setPendingError(errorMessage)
     }
-  }, [graph, navState, viewMode, showPorts])
+  }, [graph, navState, viewMode, showPorts, showGeofences])
 
   // Debounced parse on source change
   useEffect(() => {
@@ -635,7 +651,18 @@ function DiagramViewer() {
                   onChange={(e) => setShowPorts(e.target.checked)}
                   className="w-4 h-4 rounded border-gray-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900"
                 />
-                <span>Show Ports</span>
+                <span>Ports</span>
+              </label>
+
+              {/* Show Geofences Toggle */}
+              <label className="flex items-center gap-2 cursor-pointer hover:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={showGeofences}
+                  onChange={(e) => setShowGeofences(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-slate-700 text-red-500 focus:ring-red-500 focus:ring-offset-slate-900"
+                />
+                <span>Geofences</span>
               </label>
 
               {/* Zoom Controls */}

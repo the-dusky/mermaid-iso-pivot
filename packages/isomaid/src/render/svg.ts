@@ -15,6 +15,7 @@ import { getShape, type ShapeResult } from './shapes'
 import { getIsoShape, isoGrid, isoProject, isoDepth, adjustColor } from './iso-shapes'
 import { getGraphBounds } from '../layout'
 import { generateFlatGrid } from '../grid'
+import { generateGeofences, type GeofenceData, type NodeGeofence } from '../layout/geofence'
 
 export interface RenderOptions {
   /** View mode: flat or isometric */
@@ -37,6 +38,8 @@ export interface RenderOptions {
   showGrid?: boolean
   /** Show port indicators on nodes */
   showPorts?: boolean
+  /** Show geofence zones around nodes */
+  showGeofences?: boolean
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -50,6 +53,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   fontSize: 14,
   showGrid: true,
   showPorts: true,
+  showGeofences: false,
 }
 
 // Z-height for isometric node extrusion
@@ -302,6 +306,107 @@ function renderNodePorts(
   }
 
   return portsSvg
+}
+
+/**
+ * Render geofence for a single node (flat mode)
+ * Shows red exclusion zone with caution stripes, and openings at ports
+ */
+function renderFlatGeofence(geofence: NodeGeofence): string {
+  const { outer, inner, openings } = geofence
+
+  // Build a path that represents the geofence band (outer minus inner minus openings)
+  // Create the geofence shape using path with holes
+  // Outer boundary (clockwise)
+  let pathD = `M ${outer.left} ${outer.top} `
+  pathD += `L ${outer.right} ${outer.top} `
+  pathD += `L ${outer.right} ${outer.bottom} `
+  pathD += `L ${outer.left} ${outer.bottom} Z `
+
+  // Inner hole (counter-clockwise to create hole)
+  pathD += `M ${inner.left} ${inner.top} `
+  pathD += `L ${inner.left} ${inner.bottom} `
+  pathD += `L ${inner.right} ${inner.bottom} `
+  pathD += `L ${inner.right} ${inner.top} Z `
+
+  // Opening holes (counter-clockwise)
+  for (const opening of openings) {
+    const ox = opening.x
+    const oy = opening.y
+    const ow = opening.width
+    const oh = opening.height
+    pathD += `M ${ox} ${oy} `
+    pathD += `L ${ox} ${oy + oh} `
+    pathD += `L ${ox + ow} ${oy + oh} `
+    pathD += `L ${ox + ow} ${oy} Z `
+  }
+
+  return `<g class="geofence" data-node-id="${geofence.nodeId}">
+    <path
+      d="${pathD}"
+      fill="url(#geofence-pattern)"
+      fill-opacity="0.4"
+      stroke="#dc2626"
+      stroke-width="1"
+      stroke-dasharray="4,2"
+    />
+  </g>`
+}
+
+/**
+ * Render geofence for a single node (iso mode)
+ * Transforms flat geofence coordinates through isometric projection
+ */
+function renderIsoGeofence(geofence: NodeGeofence): string {
+  const { outer, inner, openings } = geofence
+  const cos30 = 0.866
+  const sin30 = 0.5
+  const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+
+  // Build the same path as flat, but we'll apply iso transform to the group
+  let pathD = `M ${outer.left} ${outer.top} `
+  pathD += `L ${outer.right} ${outer.top} `
+  pathD += `L ${outer.right} ${outer.bottom} `
+  pathD += `L ${outer.left} ${outer.bottom} Z `
+
+  // Inner hole
+  pathD += `M ${inner.left} ${inner.top} `
+  pathD += `L ${inner.left} ${inner.bottom} `
+  pathD += `L ${inner.right} ${inner.bottom} `
+  pathD += `L ${inner.right} ${inner.top} Z `
+
+  // Opening holes
+  for (const opening of openings) {
+    const ox = opening.x
+    const oy = opening.y
+    const ow = opening.width
+    const oh = opening.height
+    pathD += `M ${ox} ${oy} `
+    pathD += `L ${ox} ${oy + oh} `
+    pathD += `L ${ox + ow} ${oy + oh} `
+    pathD += `L ${ox + ow} ${oy} Z `
+  }
+
+  return `<g class="geofence iso-geofence" data-node-id="${geofence.nodeId}" transform="${isoMatrix}">
+    <path
+      d="${pathD}"
+      fill="url(#geofence-pattern)"
+      fill-opacity="0.4"
+      stroke="#dc2626"
+      stroke-width="1"
+      stroke-dasharray="4,2"
+    />
+  </g>`
+}
+
+/**
+ * Generate SVG defs for geofence pattern (caution stripes)
+ */
+function getGeofencePatternDef(): string {
+  return `<pattern id="geofence-pattern" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+    <rect width="5" height="10" fill="#dc2626" />
+    <rect x="5" width="5" height="10" fill="#fca5a5" />
+  </pattern>`
 }
 
 /**
@@ -982,9 +1087,21 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? generateFlatGrid(bounds.width + 100, bounds.height + 100, 40)
     : ''
 
+  // Generate geofences if enabled
+  let geofencesSvg = ''
+  if (opts.showGeofences) {
+    const geofenceData = generateGeofences(graph)
+    geofencesSvg = Array.from(geofenceData.nodeGeofences.values())
+      .map(gf => renderFlatGeofence(gf))
+      .join('\n')
+  }
+
   const subgraphsSvg = subgraphs.map(n => renderFlatNode(n, opts, graph.edges)).join('\n')
   const edgesSvg = graph.edges.map(e => renderFlatEdge(e, opts)).join('\n')
   const nodesSvg = regularNodes.map(n => renderFlatNode(n, opts, graph.edges)).join('\n')
+
+  // Include geofence pattern in defs if geofences are shown
+  const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -1005,10 +1122,12 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
       >
         <polygon points="0 0, 10 3.5, 0 7" fill="${opts.edgeStroke}" />
       </marker>
+      ${geofencePatternDef}
     </defs>
     <g transform="translate(${offsetX}, ${offsetY})">
       ${gridSvg}
       <g class="subgraphs">${subgraphsSvg}</g>
+      <g class="geofences">${geofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
     </g>
@@ -1061,10 +1180,22 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? isoGrid(flatBounds.width + 200, flatBounds.height + 200, 40)
     : ''
 
+  // Generate geofences if enabled
+  let geofencesSvg = ''
+  if (opts.showGeofences) {
+    const geofenceData = generateGeofences(graph)
+    geofencesSvg = Array.from(geofenceData.nodeGeofences.values())
+      .map(gf => renderIsoGeofence(gf))
+      .join('\n')
+  }
+
   // Render elements
   const subgraphsSvg = subgraphs.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
   const edgesSvg = graph.edges.map(e => renderIsoEdge(e, opts)).join('\n')
   const nodesSvg = regularNodes.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
+
+  // Include geofence pattern in defs if geofences are shown
+  const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -1074,9 +1205,13 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     class="isomaid-diagram isomaid-iso"
     data-view-mode="iso"
   >
+    <defs>
+      ${geofencePatternDef}
+    </defs>
     <g transform="translate(${offsetX}, ${offsetY})">
       ${gridSvg}
       <g class="subgraphs">${subgraphsSvg}</g>
+      <g class="geofences">${geofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
     </g>
