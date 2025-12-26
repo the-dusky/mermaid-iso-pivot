@@ -369,17 +369,11 @@ export function routeEdgesOrthogonal(
 
   // Mark geofence as obstacle with port corridor openings
   const markGeofence = (geofence: NodeGeofence, grid: PF.Grid) => {
-    const { outer, inner, openings } = geofence
+    const { outer, openings } = geofence
 
-    // Mark the geofence band (area between outer and inner bounds)
-    // Top band
-    markRect(grid, outer.left, outer.top, outer.right, inner.top)
-    // Bottom band
-    markRect(grid, outer.left, inner.bottom, outer.right, outer.bottom)
-    // Left band
-    markRect(grid, outer.left, inner.top, inner.left, inner.bottom)
-    // Right band
-    markRect(grid, inner.right, inner.top, outer.right, inner.bottom)
+    // Mark the entire area (node + geofence band) as blocked
+    // This includes both the node itself AND the geofence perimeter
+    markRect(grid, outer.left, outer.top, outer.right, outer.bottom)
 
     // Clear port corridor openings (these are walkable paths through the geofence)
     for (const opening of openings) {
@@ -484,17 +478,28 @@ export function routeEdgesOrthogonal(
       }
     }
 
-    // Build orthogonal path between the two waypoints
-    // Choose direction based on which way we're primarily going
-    const preferHorizontalFirst = Math.abs(toPt.waypoint.x - fromPt.waypoint.x) >
-                                   Math.abs(toPt.waypoint.y - fromPt.waypoint.y)
+    // Use A* pathfinding to route around obstacles (geofences)
+    const rawPath = finder.findPath(start.gx, start.gy, end.gx, end.gy, edgeGrid)
 
-    const middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
+    let middlePath: { x: number; y: number }[]
+
+    if (rawPath.length > 0) {
+      // Convert grid path to world coordinates and simplify
+      const simplified = simplifyPath(rawPath)
+      middlePath = simplified.map(([gx, gy]) => toWorld(gx, gy))
+      // Ensure orthogonal (no diagonals from grid snapping)
+      middlePath = makeOrthogonal(middlePath)
+    } else {
+      // Fallback: if no path found (shouldn't happen), use direct orthogonal path
+      const preferHorizontalFirst = Math.abs(toPt.waypoint.x - fromPt.waypoint.x) >
+                                     Math.abs(toPt.waypoint.y - fromPt.waypoint.y)
+      middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
+    }
 
     // Build full path: edge -> waypoint path -> edge
     edge.points = [
       { x: fromPt.x, y: fromPt.y },  // Start at source edge
-      ...middlePath,                  // Through waypoints with orthogonal routing
+      ...middlePath,                  // Through waypoints with A* routing around obstacles
       { x: toPt.x, y: toPt.y },       // End at target edge
     ]
   }
