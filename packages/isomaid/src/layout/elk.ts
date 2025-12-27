@@ -265,6 +265,11 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
         'elk.padding': `[top=${opts.padding + 20},left=${opts.padding},bottom=${opts.padding + 20},right=${opts.padding}]`,
         'elk.spacing.nodeNode': String(opts.nodeSpacing),
         'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.layerSpacing),
+        // Edge spacing within subgraphs
+        'elk.layered.spacing.edgeEdgeBetweenLayers': '20',
+        'elk.layered.spacing.edgeNodeBetweenLayers': '20',
+        'elk.layered.spacing.edgeEdge': '15',
+        'elk.layered.mergeEdges': 'false',
         // Node placement: use Brandes-Koepf with balanced alignment for better centering
         'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
         'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
@@ -311,8 +316,13 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
       'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
       // Edge routing options
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.spacing.edgeEdgeBetweenLayers': '15',
-      'elk.layered.spacing.edgeNodeBetweenLayers': '15',
+      'elk.layered.spacing.edgeEdgeBetweenLayers': '20',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '20',
+      'elk.layered.spacing.edgeEdge': '15',
+      // Prevent edge merging to keep edges separate
+      'elk.layered.mergeEdges': 'false',
+      // Minimize edge crossings
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       // Node placement: use Brandes-Koepf with balanced alignment for better centering
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
       'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
