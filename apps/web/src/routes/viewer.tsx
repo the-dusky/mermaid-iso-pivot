@@ -18,7 +18,7 @@ import type {
   DragState,
 } from 'isomaid'
 import { createEmptyEditingState } from 'isomaid'
-import { screenToGraph } from '../utils/coords'
+import { screenToGraph, pointToSegmentDistance, closestPointOnSegment } from '../utils/coords'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
@@ -459,11 +459,25 @@ function DiagramViewer() {
             }
           }
 
-          // Apply waypoint overrides (user-dragged middle waypoints)
-          if (edgeOverride) {
-            for (const wp of edgeOverride.waypoints) {
+          // Apply waypoint overrides
+          if (edgeOverride && edgeOverride.waypoints.length > 0) {
+            // Separate custom (inserted) waypoints from position overrides
+            const customWaypoints = edgeOverride.waypoints.filter(wp => wp.isCustom)
+            const positionOverrides = edgeOverride.waypoints.filter(wp => !wp.isCustom)
+
+            // First, apply position overrides to existing points (by original index)
+            for (const wp of positionOverrides) {
               if (wp.index >= 0 && wp.index < adjustedPoints.length) {
                 adjustedPoints[wp.index] = { x: wp.x, y: wp.y }
+              }
+            }
+
+            // Then, insert custom waypoints (sort by index descending so insertions don't affect each other)
+            const sortedCustom = [...customWaypoints].sort((a, b) => b.index - a.index)
+            for (const wp of sortedCustom) {
+              // Insert at the specified index
+              if (wp.index >= 0 && wp.index <= adjustedPoints.length) {
+                adjustedPoints.splice(wp.index, 0, { x: wp.x, y: wp.y })
               }
             }
           }
@@ -909,6 +923,115 @@ function DiagramViewer() {
 
     setDragState(null)
   }, [dragState, graph, viewMode])
+
+  // Handle double-click to add waypoints to edges
+  const handleEditDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (interactionMode !== 'edit' || !graph) return
+
+    const container = diagramContainerRef.current
+    const svgElement = container?.querySelector('svg') as SVGSVGElement | null
+    const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
+
+    if (!svgElement || !transformGroup) return
+
+    try {
+      // Get click position in graph coordinates
+      const graphPoint = screenToGraph(
+        e.clientX,
+        e.clientY,
+        svgElement,
+        transformGroup,
+        viewMode
+      )
+
+      // Hit test threshold (in graph units)
+      const HIT_THRESHOLD = 15
+
+      // Find the closest edge segment
+      let closestEdge: { edgeId: string; segmentIndex: number; distance: number; point: { x: number; y: number } } | null = null
+
+      for (const edge of graph.edges) {
+        if (!edge.points || edge.points.length < 2) continue
+
+        const edgeId = `${edge.from}->${edge.to}`
+
+        // Check each segment of the edge
+        for (let i = 0; i < edge.points.length - 1; i++) {
+          const p1 = edge.points[i]
+          const p2 = edge.points[i + 1]
+
+          const distance = pointToSegmentDistance(
+            graphPoint.x, graphPoint.y,
+            p1.x, p1.y,
+            p2.x, p2.y
+          )
+
+          if (distance < HIT_THRESHOLD && (!closestEdge || distance < closestEdge.distance)) {
+            const insertPoint = closestPointOnSegment(
+              graphPoint.x, graphPoint.y,
+              p1.x, p1.y,
+              p2.x, p2.y
+            )
+            closestEdge = {
+              edgeId,
+              segmentIndex: i,
+              distance,
+              point: insertPoint,
+            }
+          }
+        }
+      }
+
+      if (closestEdge) {
+        // Insert a new waypoint at the clicked position
+        setEditingState(prev => {
+          const newOverrides = new Map(prev.edgeOverrides)
+          const existing = newOverrides.get(closestEdge.edgeId)
+
+          // Get existing waypoints or empty array
+          const existingWaypoints = existing?.waypoints || []
+
+          // Find the original edge to get current point count
+          const edge = graph.edges.find(e => `${e.from}->${e.to}` === closestEdge.edgeId)
+          if (!edge?.points) return prev
+
+          // The new waypoint goes AFTER segmentIndex (so it becomes index segmentIndex + 1)
+          const newWaypointIndex = closestEdge.segmentIndex + 1
+
+          // Shift all existing waypoint overrides that are at or after the insertion point
+          const shiftedWaypoints = existingWaypoints.map(wp => ({
+            ...wp,
+            index: wp.index >= newWaypointIndex ? wp.index + 1 : wp.index,
+          }))
+
+          // Add the new custom waypoint
+          shiftedWaypoints.push({
+            index: newWaypointIndex,
+            x: closestEdge.point.x,
+            y: closestEdge.point.y,
+            isCustom: true,
+          })
+
+          newOverrides.set(closestEdge.edgeId, {
+            edgeId: closestEdge.edgeId,
+            waypoints: shiftedWaypoints,
+            sourcePortOverride: existing?.sourcePortOverride,
+            targetPortOverride: existing?.targetPortOverride,
+          })
+
+          return {
+            ...prev,
+            edgeOverrides: newOverrides,
+          }
+        })
+
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    } catch {
+      // Silently fail if transform not available
+    }
+  }, [interactionMode, graph, viewMode])
 
   // Attach mouse move/up listeners when dragging
   useEffect(() => {
@@ -1435,6 +1558,7 @@ function DiagramViewer() {
                     className="diagram-container"
                     onClick={handleDiagramClick}
                     onMouseDown={handleEditMouseDown}
+                    onDoubleClick={handleEditDoubleClick}
                   />
                 </div>
               )}
