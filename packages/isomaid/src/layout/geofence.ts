@@ -17,7 +17,7 @@ import type { Graph, Node, Port } from '../model/types'
 /** A rectangular exclusion zone */
 export interface GeofenceRect {
   id: string
-  type: 'node' | 'label'
+  type: 'node' | 'label' | 'subgraph'
   left: number
   right: number
   top: number
@@ -59,9 +59,16 @@ export interface LabelGeofence {
   padding: number
 }
 
+/** Geofence for a subgraph container (simple rectangle) */
+export interface SubgraphGeofence {
+  nodeId: string
+  bounds: GeofenceRect
+}
+
 /** Complete geofence data for a graph */
 export interface GeofenceData {
   nodeGeofences: Map<string, NodeGeofence>
+  subgraphGeofences: Map<string, SubgraphGeofence>
   labelGeofences: LabelGeofence[]
 }
 
@@ -232,12 +239,29 @@ export function generateNodeGeofence(node: Node): NodeGeofence | null {
  */
 export function generateGeofences(graph: Graph): GeofenceData {
   const nodeGeofences = new Map<string, NodeGeofence>()
+  const subgraphGeofences = new Map<string, SubgraphGeofence>()
   const labelGeofences: LabelGeofence[] = []
 
   for (const node of graph.nodes.values()) {
-    // Generate node geofence (with ports) for regular nodes only
-    // Subgraphs don't get node geofences - edges can pass through them
-    if (!node.isSubgraph) {
+    if (node.isSubgraph) {
+      // Generate subgraph container geofence
+      if (node.x !== undefined && node.y !== undefined) {
+        const halfW = (node.width || 100) / 2
+        const halfH = (node.height || 40) / 2
+        subgraphGeofences.set(node.id, {
+          nodeId: node.id,
+          bounds: {
+            id: `subgraph-geofence-${node.id}`,
+            type: 'subgraph',
+            left: node.x - halfW,
+            right: node.x + halfW,
+            top: node.y - halfH,
+            bottom: node.y + halfH,
+          }
+        })
+      }
+    } else {
+      // Generate node geofence (with ports) for regular nodes only
       const geofence = generateNodeGeofence(node)
       if (geofence) {
         nodeGeofences.set(node.id, geofence)
@@ -288,7 +312,7 @@ export function generateGeofences(graph: Graph): GeofenceData {
     }
   }
 
-  return { nodeGeofences, labelGeofences }
+  return { nodeGeofences, subgraphGeofences, labelGeofences }
 }
 
 /**
@@ -355,6 +379,30 @@ export function segmentIntersectsLabelGeofence(
     const x = p1.x + (p2.x - p1.x) * t
     const y = p1.y + (p2.y - p1.y) * t
     // Check if point is inside label bounds
+    if (x >= bounds.left && x <= bounds.right &&
+        y >= bounds.top && y <= bounds.bottom) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Check if a line segment intersects a subgraph geofence (simple rectangle)
+ */
+export function segmentIntersectsSubgraphGeofence(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  subgraphGeofence: SubgraphGeofence
+): boolean {
+  const { bounds } = subgraphGeofence
+  // Sample points along the segment
+  const steps = 10
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const x = p1.x + (p2.x - p1.x) * t
+    const y = p1.y + (p2.y - p1.y) * t
+    // Check if point is inside subgraph bounds
     if (x >= bounds.left && x <= bounds.right &&
         y >= bounds.top && y <= bounds.bottom) {
       return true

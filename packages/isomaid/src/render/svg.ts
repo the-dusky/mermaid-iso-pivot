@@ -40,6 +40,10 @@ export interface RenderOptions {
   showPorts?: boolean
   /** Show geofence zones around nodes */
   showGeofences?: boolean
+  /** Show debug coordinates at edge waypoints and turns */
+  showEdgeCoords?: boolean
+  /** Show debug coordinates at port connections */
+  showPortCoords?: boolean
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -54,6 +58,8 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   showGrid: true,
   showPorts: false,
   showGeofences: false,
+  showEdgeCoords: false,
+  showPortCoords: false,
 }
 
 // Z-height for isometric node extrusion
@@ -1021,6 +1027,153 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
 }
 
 /**
+ * Render debug coordinate labels for edge waypoints and turns
+ */
+function renderEdgeCoords(
+  edge: Edge,
+  opts: Required<RenderOptions>,
+  isIso: boolean = false
+): string {
+  if (!opts.showEdgeCoords || !edge.points || edge.points.length === 0) {
+    return ''
+  }
+
+  let svg = ''
+  const fontSize = 9
+  const cos30 = 0.866
+  const sin30 = 0.5
+
+  const points = edge.points
+
+  // Detect turns (where direction changes)
+  const turns: Set<number> = new Set()
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1]
+    const curr = points[i]
+    const next = points[i + 1]
+
+    const dx1 = curr.x - prev.x
+    const dy1 = curr.y - prev.y
+    const dx2 = next.x - curr.x
+    const dy2 = next.y - curr.y
+
+    const isHorizontal1 = Math.abs(dx1) > Math.abs(dy1)
+    const isHorizontal2 = Math.abs(dx2) > Math.abs(dy2)
+
+    if (isHorizontal1 !== isHorizontal2) {
+      turns.add(i)
+    }
+  }
+
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i]
+    const isTurn = turns.has(i)
+
+    // Color: orange for turns, gray for waypoints
+    const color = isTurn ? '#f97316' : '#888'
+    const bgColor = isTurn ? '#fff7ed' : '#f3f4f6'
+    const label = isTurn
+      ? `⤷${Math.round(pt.x)},${Math.round(pt.y)}`
+      : `${Math.round(pt.x)},${Math.round(pt.y)}`
+
+    // Alternate offset direction based on point index to spread labels out
+    const offsetDir = (i % 2 === 0) ? -1 : 1
+    const offsetX = offsetDir * 35
+    const offsetY = -15
+
+    const bgPadding = 2
+    const labelWidth = label.length * 5.5
+
+    if (isIso) {
+      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+      svg += `<g transform="${isoMatrix}">
+        <line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="${color}" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="2" fill="${color}"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="${bgColor}" fill-opacity="0.95" rx="2" stroke="${color}" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="${color}" font-weight="bold">${label}</text>
+      </g>`
+    } else {
+      svg += `<line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="${color}" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="2" fill="${color}"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="${bgColor}" fill-opacity="0.95" rx="2" stroke="${color}" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="${color}" font-weight="bold">${label}</text>`
+    }
+  }
+
+  return svg
+}
+
+/**
+ * Render debug coordinate labels for port connections (source and target)
+ */
+function renderPortCoords(
+  edge: Edge,
+  opts: Required<RenderOptions>,
+  isIso: boolean = false
+): string {
+  if (!opts.showPortCoords) {
+    return ''
+  }
+
+  let svg = ''
+  const fontSize = 9
+  const cos30 = 0.866
+  const sin30 = 0.5
+
+  const bgPadding = 2
+
+  // Source port (green) - offset to upper-left
+  if (edge.sourcePort?.closeX !== undefined && edge.sourcePort?.closeY !== undefined) {
+    const pt = { x: edge.sourcePort.closeX, y: edge.sourcePort.closeY }
+    const label = `S:${Math.round(pt.x)},${Math.round(pt.y)}`
+    const offsetX = -40
+    const offsetY = -25
+    const labelWidth = label.length * 5.5
+
+    if (isIso) {
+      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+      svg += `<g transform="${isoMatrix}">
+        <line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="#22c55e" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="3" fill="#22c55e"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="#dcfce7" fill-opacity="0.95" rx="2" stroke="#22c55e" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="#15803d" font-weight="bold">${label}</text>
+      </g>`
+    } else {
+      svg += `<line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="#22c55e" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="3" fill="#22c55e"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="#dcfce7" fill-opacity="0.95" rx="2" stroke="#22c55e" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="#15803d" font-weight="bold">${label}</text>`
+    }
+  }
+
+  // Target port (red) - offset to upper-right
+  if (edge.targetPort?.closeX !== undefined && edge.targetPort?.closeY !== undefined) {
+    const pt = { x: edge.targetPort.closeX, y: edge.targetPort.closeY }
+    const label = `T:${Math.round(pt.x)},${Math.round(pt.y)}`
+    const offsetX = 40
+    const offsetY = -25
+    const labelWidth = label.length * 5.5
+
+    if (isIso) {
+      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+      svg += `<g transform="${isoMatrix}">
+        <line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="3" fill="#ef4444"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="#fee2e2" fill-opacity="0.95" rx="2" stroke="#ef4444" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="#b91c1c" font-weight="bold">${label}</text>
+      </g>`
+    } else {
+      svg += `<line x1="${pt.x}" y1="${pt.y}" x2="${pt.x + offsetX}" y2="${pt.y + offsetY}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="2,1"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="3" fill="#ef4444"/>
+        <rect x="${pt.x + offsetX - labelWidth/2 - bgPadding}" y="${pt.y + offsetY - fontSize/2 - bgPadding}" width="${labelWidth + bgPadding*2}" height="${fontSize + bgPadding*2}" fill="#fee2e2" fill-opacity="0.95" rx="2" stroke="#ef4444" stroke-width="0.5"/>
+        <text x="${pt.x + offsetX}" y="${pt.y + offsetY}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="#b91c1c" font-weight="bold">${label}</text>`
+    }
+  }
+
+  return svg
+}
+
+/**
  * Calculate isometric viewBox bounds
  */
 function getIsoBounds(graph: Graph): { minX: number; minY: number; maxX: number; maxY: number } {
@@ -1159,6 +1312,14 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
   const edgesSvg = graph.edges.map(e => renderFlatEdge(e, opts)).join('\n')
   const nodesSvg = regularNodes.map(n => renderFlatNode(n, opts, graph.edges)).join('\n')
 
+  // Generate debug coordinates if enabled
+  const edgeCoordsSvg = opts.showEdgeCoords
+    ? graph.edges.map(e => renderEdgeCoords(e, opts, false)).join('\n')
+    : ''
+  const portCoordsSvg = opts.showPortCoords
+    ? graph.edges.map(e => renderPortCoords(e, opts, false)).join('\n')
+    : ''
+
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
@@ -1190,6 +1351,8 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="label-geofences">${labelGeofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
+      <g class="edge-coords">${edgeCoordsSvg}</g>
+      <g class="port-coords">${portCoordsSvg}</g>
     </g>
   </svg>`
 }
@@ -1258,6 +1421,14 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
   const edgesSvg = graph.edges.map(e => renderIsoEdge(e, opts)).join('\n')
   const nodesSvg = regularNodes.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
 
+  // Generate debug coordinates if enabled
+  const edgeCoordsSvg = opts.showEdgeCoords
+    ? graph.edges.map(e => renderEdgeCoords(e, opts, true)).join('\n')
+    : ''
+  const portCoordsSvg = opts.showPortCoords
+    ? graph.edges.map(e => renderPortCoords(e, opts, true)).join('\n')
+    : ''
+
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
@@ -1279,6 +1450,8 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="label-geofences">${labelGeofencesSvg}</g>
       <g class="edges">${edgesSvg}</g>
       <g class="nodes">${nodesSvg}</g>
+      <g class="edge-coords">${edgeCoordsSvg}</g>
+      <g class="port-coords">${portCoordsSvg}</g>
     </g>
   </svg>`
 }

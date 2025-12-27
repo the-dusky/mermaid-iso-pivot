@@ -46,6 +46,8 @@ const ZOOM_STORAGE_KEY = 'isomaid-editor-zoom'
 const VIEW_MODE_STORAGE_KEY = 'isomaid-editor-view-mode'
 const SHOW_PORTS_STORAGE_KEY = 'isomaid-editor-show-ports'
 const SHOW_GEOFENCES_STORAGE_KEY = 'isomaid-editor-show-geofences'
+const SHOW_EDGE_COORDS_STORAGE_KEY = 'isomaid-editor-show-edge-coords'
+const SHOW_PORT_COORDS_STORAGE_KEY = 'isomaid-editor-show-port-coords'
 const SPLIT_POSITION_STORAGE_KEY = 'isomaid-editor-split-position'
 const MAX_HISTORY = 100
 
@@ -89,6 +91,24 @@ function DiagramViewer() {
     }
     return false
   })
+  const [showEdgeCoords, setShowEdgeCoords] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(SHOW_EDGE_COORDS_STORAGE_KEY)
+      if (saved !== null) {
+        return saved === 'true'
+      }
+    }
+    return false
+  })
+  const [showPortCoords, setShowPortCoords] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(SHOW_PORT_COORDS_STORAGE_KEY)
+      if (saved !== null) {
+        return saved === 'true'
+      }
+    }
+    return false
+  })
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(ZOOM_STORAGE_KEY)
@@ -111,6 +131,8 @@ function DiagramViewer() {
   // Collision test results
   const [collisionResult, setCollisionResult] = useState<CollisionTestResult | null>(null)
   const [showCollisions, setShowCollisions] = useState(false)
+  // Clicked coordinate display
+  const [clickedCoord, setClickedCoord] = useState<{ x: number; y: number; screenX: number; screenY: number } | null>(null)
   const [loading, setLoading] = useState(true)
   const [splitPosition, setSplitPosition] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -169,6 +191,18 @@ function DiagramViewer() {
       localStorage.setItem(SHOW_GEOFENCES_STORAGE_KEY, String(showGeofences))
     }
   }, [showGeofences])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SHOW_EDGE_COORDS_STORAGE_KEY, String(showEdgeCoords))
+    }
+  }, [showEdgeCoords])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SHOW_PORT_COORDS_STORAGE_KEY, String(showPortCoords))
+    }
+  }, [showPortCoords])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -276,8 +310,8 @@ function DiagramViewer() {
         edges: visibleEdges,
       }
 
-      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}`)
-      const svg = render(renderGraph, { viewMode, showPorts, showGeofences })
+      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}, showEdgeCoords=${showEdgeCoords}, showPortCoords=${showPortCoords}`)
+      const svg = render(renderGraph, { viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords })
       console.log(`Render completed, svg length=${svg.length}`)
 
       // Run collision test after render
@@ -290,7 +324,7 @@ function DiagramViewer() {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
       setPendingError(errorMessage)
     }
-  }, [graph, navState, viewMode, showPorts, showGeofences])
+  }, [graph, navState, viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords])
 
   // Debounced parse on source change
   useEffect(() => {
@@ -399,6 +433,47 @@ function DiagramViewer() {
       element = element.parentElement as SVGElement | null
     }
   }, [graph, handleToggleFold])
+
+  // Handle click on diagram canvas to show coordinates
+  const handleCanvasClick = useCallback((e: React.MouseEvent) => {
+    const container = diagramContainerRef.current
+    if (!container) return
+
+    // Get click position relative to the container (for tooltip placement)
+    const rect = container.getBoundingClientRect()
+    const screenX = e.clientX - rect.left
+    const screenY = e.clientY - rect.top
+
+    // Find the SVG's transform group (contains the graph content with offset)
+    const svgElement = container.querySelector('svg')
+    const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
+
+    if (transformGroup) {
+      // Use getScreenCTM to get the full transform from screen to SVG coordinates
+      const ctm = transformGroup.getScreenCTM()
+      if (ctm) {
+        // Create a point in screen coordinates and transform to graph coordinates
+        const svgPoint = svgElement!.createSVGPoint()
+        svgPoint.x = e.clientX
+        svgPoint.y = e.clientY
+
+        // Apply inverse transform to get graph coordinates
+        const graphPoint = svgPoint.matrixTransform(ctm.inverse())
+
+        setClickedCoord({
+          x: Math.round(graphPoint.x),
+          y: Math.round(graphPoint.y),
+          screenX,
+          screenY
+        })
+      }
+    }
+
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setClickedCoord(null)
+    }, 3000)
+  }, [])
 
   useEffect(() => {
     if (isResizing) {
@@ -706,6 +781,28 @@ function DiagramViewer() {
                 <span>Geofences</span>
               </label>
 
+              {/* Show Edge Coords Toggle */}
+              <label className="flex items-center gap-2 cursor-pointer hover:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={showEdgeCoords}
+                  onChange={(e) => setShowEdgeCoords(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-slate-700 text-orange-500 focus:ring-orange-500 focus:ring-offset-slate-900"
+                />
+                <span>Edge</span>
+              </label>
+
+              {/* Show Port Coords Toggle */}
+              <label className="flex items-center gap-2 cursor-pointer hover:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={showPortCoords}
+                  onChange={(e) => setShowPortCoords(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-slate-700 text-green-500 focus:ring-green-500 focus:ring-offset-slate-900"
+                />
+                <span>Port</span>
+              </label>
+
               {/* Zoom Controls */}
               <div className="flex items-center gap-1 bg-slate-700 rounded-md px-2 py-1">
                 <button
@@ -736,7 +833,8 @@ function DiagramViewer() {
           {/* Diagram Content */}
           <div
             ref={diagramContainerRef}
-            className="flex-1 overflow-hidden relative bg-slate-900"
+            className="flex-1 overflow-hidden relative bg-slate-900 cursor-crosshair"
+            onClick={handleCanvasClick}
           >
             {/* Show visible error (only when Check is clicked) */}
             {visibleError && (
@@ -794,6 +892,26 @@ function DiagramViewer() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Show clicked coordinate */}
+            {clickedCoord && (
+              <div
+                className="absolute z-20 pointer-events-none"
+                style={{
+                  left: clickedCoord.screenX,
+                  top: clickedCoord.screenY,
+                  transform: 'translate(-50%, -100%) translateY(-8px)'
+                }}
+              >
+                <div className="bg-slate-800 border border-cyan-500 rounded-md px-2 py-1 text-cyan-400 font-mono text-sm shadow-lg whitespace-nowrap">
+                  {clickedCoord.x}, {clickedCoord.y}
+                </div>
+                <div
+                  className="absolute left-1/2 -translate-x-1/2 w-2 h-2 bg-cyan-500 rounded-full"
+                  style={{ bottom: -12 }}
+                />
               </div>
             )}
 
