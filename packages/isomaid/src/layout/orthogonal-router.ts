@@ -238,27 +238,38 @@ function buildTestPath(
 
 /**
  * Count how many geofences an L-path collides with
- * Excludes source and target nodes from collision checks
- * Also excludes parent subgraphs (nodes inside a subgraph must cross its boundary)
+ *
+ * Geofence exclusion rules:
+ * - Source node: Only excluded for FIRST segment (exiting via port)
+ * - Target node: Only excluded for LAST segment (entering via port)
+ * - Middle segments: Must check against ALL node geofences including source/target
+ * - Parent subgraphs: Always excluded (nodes must cross their container boundary)
  */
 function countPathCollisions(
   path: { x: number; y: number }[],
   geofenceData: GeofenceData,
-  excludeNodeIds: string[],
+  sourceNodeId: string,
+  targetNodeId: string,
   excludeSubgraphIds: string[] = []
 ): number {
   let collisionCount = 0
   const countedNodes = new Set<string>()
   const countedLabels = new Set<string>()
   const countedSubgraphs = new Set<string>()
+  const lastSegmentIdx = path.length - 2
 
   for (let i = 0; i < path.length - 1; i++) {
     const p1 = path[i]
     const p2 = path[i + 1]
+    const isFirstSegment = i === 0
+    const isLastSegment = i === lastSegmentIdx
 
     // Check node geofences
     for (const [nodeId, geofence] of geofenceData.nodeGeofences) {
-      if (excludeNodeIds.includes(nodeId)) continue
+      // Source geofence: only skip for first segment (exiting via port)
+      if (nodeId === sourceNodeId && isFirstSegment) continue
+      // Target geofence: only skip for last segment (entering via port)
+      if (nodeId === targetNodeId && isLastSegment) continue
       if (countedNodes.has(nodeId)) continue
 
       if (segmentIntersectsGeofence(p1, p2, geofence)) {
@@ -269,8 +280,9 @@ function countPathCollisions(
 
     // Check subgraph geofences
     for (const [subgraphId, subgraphGeofence] of geofenceData.subgraphGeofences) {
-      // Skip source/target nodes
-      if (excludeNodeIds.includes(subgraphId)) continue
+      // Source/target subgraph handling (same as nodes)
+      if (subgraphId === sourceNodeId && isFirstSegment) continue
+      if (subgraphId === targetNodeId && isLastSegment) continue
       // Skip parent subgraphs (nodes inside must cross their parent's boundary)
       if (excludeSubgraphIds.includes(subgraphId)) continue
       if (countedSubgraphs.has(subgraphId)) continue
@@ -287,8 +299,9 @@ function countPathCollisions(
       // Extract node ID from label ID
       const nodeId = labelId.replace('label-', '').replace('edge-', '')
 
-      // Skip labels for source/target nodes
-      if (excludeNodeIds.includes(nodeId)) continue
+      // Skip labels for source/target nodes on their respective segments
+      if (nodeId === sourceNodeId && isFirstSegment) continue
+      if (nodeId === targetNodeId && isLastSegment) continue
       if (countedLabels.has(labelId)) continue
 
       if (segmentIntersectsLabelGeofence(p1, p2, labelGeofence)) {
@@ -398,9 +411,6 @@ function getConnectionPoints(
   const finalToSides = validToSides.length > 0 ? validToSides :
     allSides.filter(side => labelGeofences.length === 0 || hasUnblockedPortsOnSide(toNode, side, labelGeofences))
 
-  // Nodes to exclude from collision detection (source and target)
-  const excludeNodeIds = [fromNode.id, toNode.id]
-
   // Parent subgraphs to exclude - nodes inside a subgraph must cross its boundary
   const excludeSubgraphIds: string[] = []
   if (fromNode.parent) excludeSubgraphIds.push(fromNode.parent)
@@ -430,7 +440,7 @@ function getConnectionPoints(
           fromSide,
           toSide
         )
-        const collisions = countPathCollisions(testPath, geofenceData, excludeNodeIds, excludeSubgraphIds)
+        const collisions = countPathCollisions(testPath, geofenceData, fromNode.id, toNode.id, excludeSubgraphIds)
         collisionPenalty = collisions * COLLISION_PENALTY
       }
 
@@ -539,6 +549,37 @@ export function findEdgeCrossings(edges: Edge[]): Map<Edge, { x: number; y: numb
 }
 
 /**
+ * Count how many already-routed edges a candidate path would cross
+ */
+function countEdgeCrossings(
+  candidatePath: { x: number; y: number }[],
+  routedEdges: { points: { x: number; y: number }[] }[]
+): number {
+  let crossingCount = 0
+
+  for (const routedEdge of routedEdges) {
+    if (!routedEdge.points || routedEdge.points.length < 2) continue
+
+    // Check all segment pairs between candidate and routed edge
+    for (let i = 0; i < candidatePath.length - 1; i++) {
+      for (let j = 0; j < routedEdge.points.length - 1; j++) {
+        const intersection = segmentsIntersect(
+          candidatePath[i],
+          candidatePath[i + 1],
+          routedEdge.points[j],
+          routedEdge.points[j + 1]
+        )
+        if (intersection) {
+          crossingCount++
+        }
+      }
+    }
+  }
+
+  return crossingCount
+}
+
+/**
  * Count turns in a path (direction changes)
  */
 function countTurns(points: { x: number; y: number }[]): number {
@@ -575,6 +616,7 @@ interface RouteCandidate {
   fromPt: ConnectionPoint
   toPt: ConnectionPoint
   collisions: number
+  edgeCrossings: number
   distance: number
   turns: number
 }
@@ -588,7 +630,8 @@ function routeSingleEdge(
   graph: Graph,
   geofenceData: GeofenceData,
   fromSide: Side,
-  toSide: Side
+  toSide: Side,
+  routedEdges: { points: { x: number; y: number }[] }[]
 ): RouteCandidate {
   const fromPos = getPortPosition(fromNode, fromSide, undefined, graph, geofenceData.labelGeofences)
   const toPos = getPortPosition(toNode, toSide, undefined, graph, geofenceData.labelGeofences)
@@ -616,18 +659,18 @@ function routeSingleEdge(
   ]
 
   // Count collisions for this path
-  const excludeNodeIds = [fromNode.id, toNode.id]
   const excludeSubgraphIds: string[] = []
   if (fromNode.parent) excludeSubgraphIds.push(fromNode.parent)
   if (toNode.parent && !excludeSubgraphIds.includes(toNode.parent)) {
     excludeSubgraphIds.push(toNode.parent)
   }
 
-  const collisions = countPathCollisions(points, geofenceData, excludeNodeIds, excludeSubgraphIds)
+  const collisions = countPathCollisions(points, geofenceData, fromNode.id, toNode.id, excludeSubgraphIds)
+  const edgeCrossings = countEdgeCrossings(points, routedEdges)
   const distance = pathDistance(points)
   const turns = countTurns(points)
 
-  return { points, fromPt, toPt, collisions, distance, turns }
+  return { points, fromPt, toPt, collisions, edgeCrossings, distance, turns }
 }
 
 /**
@@ -635,8 +678,9 @@ function routeSingleEdge(
  *
  * Routing priority (in order):
  * 1. Zero collisions (must not collide with geofences)
- * 2. Shortest distance (closest port combination)
- * 3. Fewest turns (minimize path complexity)
+ * 2. Zero edge crossings (prefer paths that don't cross other edges)
+ * 3. Shortest distance (closest port combination)
+ * 4. Fewest turns (minimize path complexity)
  */
 export function routeEdgesOrthogonal(
   graph: Graph,
@@ -645,6 +689,9 @@ export function routeEdgesOrthogonal(
   // Generate geofences for port blocking (not for A* routing)
   const geofenceData = generateGeofences(graph)
   const allSides: Side[] = ['top', 'bottom', 'left', 'right']
+
+  // Track already-routed edges for crossing detection
+  const routedEdges: { points: { x: number; y: number }[] }[] = []
 
   // Route each edge
   for (const edge of graph.edges) {
@@ -660,7 +707,7 @@ export function routeEdgesOrthogonal(
       for (const toSide of allSides) {
         const candidate = routeSingleEdge(
           fromNode, toNode, graph, geofenceData,
-          fromSide, toSide
+          fromSide, toSide, routedEdges
         )
         candidates.push(candidate)
       }
@@ -668,18 +715,23 @@ export function routeEdgesOrthogonal(
 
     // Sort candidates by priority:
     // 1. Collisions (0 first - collision-free paths win)
-    // 2. Distance (shorter is better)
-    // 3. Turns (fewer is better)
+    // 2. Edge crossings (0 first - paths without crossings win)
+    // 3. Distance (shorter is better)
+    // 4. Turns (fewer is better)
     candidates.sort((a, b) => {
       // First: prioritize collision-free
       if (a.collisions !== b.collisions) {
         return a.collisions - b.collisions
       }
-      // Second: shorter distance
+      // Second: fewer edge crossings
+      if (a.edgeCrossings !== b.edgeCrossings) {
+        return a.edgeCrossings - b.edgeCrossings
+      }
+      // Third: shorter distance
       if (a.distance !== b.distance) {
         return a.distance - b.distance
       }
-      // Third: fewer turns
+      // Fourth: fewer turns
       return a.turns - b.turns
     })
 
@@ -692,9 +744,12 @@ export function routeEdgesOrthogonal(
     edge.sourcePort = best.fromPt.port
     edge.targetPort = best.toPt.port
     edge.points = best.points
+
+    // Add to routed edges for future crossing detection
+    routedEdges.push({ points: best.points })
   }
 
-  // Find and store edge crossings
+  // Find and store edge crossings (for bridge rendering)
   const crossings = findEdgeCrossings(graph.edges)
   for (const [edge, points] of crossings) {
     edge.crossings = points
@@ -783,7 +838,7 @@ function buildOrthogonalPath(
   }
 
   // 2 turns required: port directions conflict with simple L-path
-  // Use bias to place the turn aesthetically (40% from source)
+  // Use 40% bias - place the zig-zag turn 40% of the way from source to target
   const bias = 0.4
 
   // Determine which direction we MUST go first based on exit port
