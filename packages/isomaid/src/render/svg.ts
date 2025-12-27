@@ -1251,12 +1251,12 @@ function renderWaypointHandles(
 
     if (isIso) {
       const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
-      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" transform="${isoMatrix}" style="cursor: move;">
+      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" transform="${isoMatrix}" style="cursor: pointer;">
         <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
         <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
       </g>`
     } else {
-      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" style="cursor: move;">
+      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" style="cursor: pointer;">
         <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
         <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
       </g>`
