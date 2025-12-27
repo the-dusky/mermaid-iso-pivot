@@ -131,19 +131,20 @@ export function generateNodeGeofence(node: Node): NodeGeofence | null {
   const halfW = (node.width || 100) / 2
   const halfH = (node.height || 40) / 2
 
-  // Calculate outer bounds from corner ports (they define max extent)
-  // Find the max extent on each side from the corner ports
+  // Calculate outer bounds from far ports (blue) - not corner waypoints (red)
+  // This keeps the geofence tighter around the node, allowing edges to route
+  // through the space between the far port and corner waypoint
   let outerLeft = x - halfW
   let outerRight = x + halfW
   let outerTop = y - halfH
   let outerBottom = y + halfH
 
   for (const port of node.ports) {
-    if (port.cornerX !== undefined && port.cornerY !== undefined) {
-      outerLeft = Math.min(outerLeft, port.cornerX)
-      outerRight = Math.max(outerRight, port.cornerX)
-      outerTop = Math.min(outerTop, port.cornerY)
-      outerBottom = Math.max(outerBottom, port.cornerY)
+    if (port.farX !== undefined && port.farY !== undefined) {
+      outerLeft = Math.min(outerLeft, port.farX)
+      outerRight = Math.max(outerRight, port.farX)
+      outerTop = Math.min(outerTop, port.farY)
+      outerBottom = Math.max(outerBottom, port.farY)
     }
   }
 

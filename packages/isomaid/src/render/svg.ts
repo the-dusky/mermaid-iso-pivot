@@ -860,14 +860,34 @@ function renderFlatEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: s
 }
 
 /**
+ * Check if a node is an expanded (flat) subgraph vs a 3D block
+ * - Expanded subgraphs are flat containers → use close port
+ * - Collapsed subgraphs and regular nodes are 3D blocks → use far port for Top/Left
+ */
+function isExpandedSubgraph(nodes: Map<string, Node>, nodeId: string): boolean {
+  const node = nodes.get(nodeId)
+  if (!node) return false
+
+  const nodeExt = node as Node & { _collapsed?: boolean; _hasChildren?: boolean }
+  // An expanded subgraph is a subgraph that is NOT collapsed
+  // (collapsed subgraphs render as 3D blocks)
+  return node.isSubgraph && !nodeExt._collapsed
+}
+
+/**
  * Render an edge in isometric mode using matrix transform
  *
  * Uses the isometric matrix transform so strokes lay flat on the ground plane.
- * Edges are extended from corner (red) ports to:
- * - close (green) for Right/Bottom sides
- * - far (blue) for Top/Left sides (to avoid overlap with iso node faces)
+ * Port selection depends on node type:
+ * - Expanded subgraphs (flat containers): always close port
+ * - Collapsed subgraphs / regular nodes (3D blocks): far for Top/Left, close for Right/Bottom
  */
-function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: string): string {
+function renderIsoEdge(
+  edge: Edge,
+  opts: Required<RenderOptions>,
+  nodes: Map<string, Node>,
+  edgeLabel?: string
+): string {
   if (!edge.points || edge.points.length < 2) {
     return ''
   }
@@ -881,22 +901,34 @@ function renderIsoEdge(edge: Edge, opts: Required<RenderOptions>, edgeLabel?: st
   const arrowWidth = 5
   const hasArrow = edge.toArrow !== 'none'
 
+  // Check if source/target are expanded subgraphs (flat) vs 3D blocks
+  const sourceIsFlat = isExpandedSubgraph(nodes, edge.from)
+  const targetIsFlat = isExpandedSubgraph(nodes, edge.to)
+
   // Extend path with appropriate port coordinates for unified rendering
-  // Source: ALWAYS use close (green) port
-  // Target: close (green) for Right/Bottom, far (blue) for Top/Left
+  // Flat containers: always use close port
+  // 3D blocks: close for Right/Bottom, far for Top/Left
   let extendedPoints = [...edge.points]
 
-  // Prepend source port endpoint - always use close (green)
-  if (edge.sourcePort?.closeX !== undefined && edge.sourcePort?.closeY !== undefined) {
-    extendedPoints = [
-      { x: edge.sourcePort.closeX, y: edge.sourcePort.closeY },
-      ...extendedPoints
-    ]
+  // Prepend source port endpoint
+  if (edge.sourcePort) {
+    const useSourceFar = !sourceIsFlat && (edge.fromPort === 'T' || edge.fromPort === 'L')
+    if (useSourceFar && edge.sourcePort.farX !== undefined && edge.sourcePort.farY !== undefined) {
+      extendedPoints = [
+        { x: edge.sourcePort.farX, y: edge.sourcePort.farY },
+        ...extendedPoints
+      ]
+    } else if (edge.sourcePort.closeX !== undefined && edge.sourcePort.closeY !== undefined) {
+      extendedPoints = [
+        { x: edge.sourcePort.closeX, y: edge.sourcePort.closeY },
+        ...extendedPoints
+      ]
+    }
   }
 
   // Append target port endpoint
   if (edge.targetPort) {
-    const useTargetFar = edge.toPort === 'T' || edge.toPort === 'L'
+    const useTargetFar = !targetIsFlat && (edge.toPort === 'T' || edge.toPort === 'L')
     if (useTargetFar && edge.targetPort.farX !== undefined && edge.targetPort.farY !== undefined) {
       extendedPoints = [
         ...extendedPoints,
@@ -1418,7 +1450,7 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
 
   // Render elements
   const subgraphsSvg = subgraphs.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
-  const edgesSvg = graph.edges.map(e => renderIsoEdge(e, opts)).join('\n')
+  const edgesSvg = graph.edges.map(e => renderIsoEdge(e, opts, graph.nodes)).join('\n')
   const nodesSvg = regularNodes.map(n => renderIsoNode(n, opts, graph.edges)).join('\n')
 
   // Generate debug coordinates if enabled

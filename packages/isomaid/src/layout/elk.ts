@@ -101,7 +101,7 @@ function generateNodePorts(
   // close offset: a few pixels outside the edge
   const closeOffset = 3
 
-  // corner offset: routing waypoint distance (minimal for clean turns)
+  // corner offset: routing waypoint distance
   const cornerOffset = farOffset + 15
 
   const ports: Port[] = []
