@@ -496,8 +496,9 @@ function DiagramViewer() {
       }
 
       const showWaypointHandles = interactionMode === 'edit'
+      const editMode = interactionMode === 'edit'
       console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}, showEdgeCoords=${showEdgeCoords}, showPortCoords=${showPortCoords}, showWaypointHandles=${showWaypointHandles}`)
-      const svg = render(renderGraph, { viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords, showWaypointHandles })
+      const svg = render(renderGraph, { viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords, showWaypointHandles, editMode })
       console.log(`Render completed, svg length=${svg.length}`)
 
       // Run collision test after render

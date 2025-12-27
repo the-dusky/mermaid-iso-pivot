@@ -46,6 +46,8 @@ export interface RenderOptions {
   showPortCoords?: boolean
   /** Show draggable waypoint handles on edges (for edit mode) */
   showWaypointHandles?: boolean
+  /** Enable edit mode styling (pointer cursor on nodes) */
+  editMode?: boolean
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -63,6 +65,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   showEdgeCoords: false,
   showPortCoords: false,
   showWaypointHandles: false,
+  editMode: false,
 }
 
 // Z-height for isometric node extrusion
@@ -563,11 +566,14 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
   const collapseIconSvg = renderCollapseIcon(nodeExt, flatTransform, renderNode.x!, renderNode.y!, false)
 
+  const cursorStyle = opts.editMode ? 'cursor: pointer;' : ''
+
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
     transform="translate(${renderNode.x}, ${renderNode.y})"
     opacity="${opacity}"
+    ${cursorStyle ? `style="${cursorStyle}"` : ''}
   >
     ${shapeSvg}
     ${textSvg}
@@ -691,10 +697,13 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
   const collapseIconSvg = renderCollapseIcon(nodeExt, isoProject, nodeX, nodeY, true)
 
+  const cursorStyle = opts.editMode ? 'cursor: pointer;' : ''
+
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
     opacity="${opacity}"
+    ${cursorStyle ? `style="${cursorStyle}"` : ''}
   >
     ${facesSvg}
     ${textSvg}
