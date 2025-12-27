@@ -265,6 +265,9 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
         'elk.padding': `[top=${opts.padding + 20},left=${opts.padding},bottom=${opts.padding + 20},right=${opts.padding}]`,
         'elk.spacing.nodeNode': String(opts.nodeSpacing),
         'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.layerSpacing),
+        // Node placement: use Brandes-Koepf with balanced alignment for better centering
+        'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+        'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
         // Center children within the subgraph
         'elk.contentAlignment': 'H_CENTER V_CENTER',
         'elk.alignment': 'CENTER',
@@ -310,6 +313,9 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.spacing.edgeEdgeBetweenLayers': '15',
       'elk.layered.spacing.edgeNodeBetweenLayers': '15',
+      // Node placement: use Brandes-Koepf with balanced alignment for better centering
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
       // Center nodes within layers
       'elk.alignment': 'CENTER',
     },
