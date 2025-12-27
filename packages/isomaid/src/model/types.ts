@@ -212,6 +212,65 @@ export interface AppState {
   selectedNode: string | null
 }
 
+// ============ Editing State (for interactive manipulation) ============
+
+/** Interaction mode for the viewer */
+export type InteractionMode = 'view' | 'edit' | 'coord'
+
+/** Position override for a node (delta from layout position) */
+export interface NodePositionOverride {
+  nodeId: string
+  dx: number  // Delta X from original position
+  dy: number  // Delta Y from original position
+}
+
+/** Waypoint for edge override */
+export interface WaypointOverride {
+  index: number
+  x: number
+  y: number
+  isCustom?: boolean  // True if user-added waypoint
+}
+
+/** Port override for an edge endpoint */
+export interface PortOverride {
+  portIndex: number  // Index into the node's ports array
+}
+
+/** Waypoint override for an edge */
+export interface EdgeWaypointOverride {
+  edgeId: string  // Format: "from->to"
+  waypoints: WaypointOverride[]
+  sourcePortOverride?: PortOverride  // Override which port the edge starts from
+  targetPortOverride?: PortOverride  // Override which port the edge ends at
+}
+
+/** Full editing state for interactive manipulation */
+export interface EditingState {
+  nodeOverrides: Map<string, NodePositionOverride>
+  edgeOverrides: Map<string, EdgeWaypointOverride>
+}
+
+/** Drag state during active drag operation */
+export interface DragState {
+  type: 'node' | 'waypoint' | 'endpoint'
+  targetId: string
+  waypointIndex?: number
+  endpointType?: 'source' | 'target'  // For endpoint drags
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+}
+
+/** Create empty editing state */
+export function createEmptyEditingState(): EditingState {
+  return {
+    nodeOverrides: new Map(),
+    edgeOverrides: new Map(),
+  }
+}
+
 // ============ Helpers ============
 
 /** Default grid configuration */

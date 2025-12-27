@@ -44,6 +44,8 @@ export interface RenderOptions {
   showEdgeCoords?: boolean
   /** Show debug coordinates at port connections */
   showPortCoords?: boolean
+  /** Show draggable waypoint handles on edges (for edit mode) */
+  showWaypointHandles?: boolean
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -60,6 +62,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
   showGeofences: false,
   showEdgeCoords: false,
   showPortCoords: false,
+  showWaypointHandles: false,
 }
 
 // Z-height for isometric node extrusion
@@ -1206,6 +1209,79 @@ function renderPortCoords(
 }
 
 /**
+ * Render draggable waypoint handles for an edge (for edit mode)
+ * Renders small circles at each waypoint that can be dragged
+ * - Orange circles: middle waypoints (drag to reposition)
+ * - Green circles: endpoint handles (drag to change port connection)
+ */
+function renderWaypointHandles(
+  edge: Edge,
+  opts: Required<RenderOptions>,
+  isIso: boolean = false
+): string {
+  if (!opts.showWaypointHandles || !edge.points || edge.points.length < 2) {
+    return ''
+  }
+
+  let svg = ''
+  const handleRadius = 6
+  const endpointRadius = 7
+  const cos30 = 0.866
+  const sin30 = 0.5
+  const edgeId = `${edge.from}->${edge.to}`
+
+  // Render source endpoint handle (green - for changing port)
+  const sourcePt = edge.points[0]
+  if (isIso) {
+    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="source" transform="${isoMatrix}" style="cursor: pointer;">
+      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
+      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
+    </g>`
+  } else {
+    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="source" style="cursor: pointer;">
+      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
+      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
+    </g>`
+  }
+
+  // Render middle waypoint handles (orange - for repositioning)
+  for (let i = 1; i < edge.points.length - 1; i++) {
+    const pt = edge.points[i]
+
+    if (isIso) {
+      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" transform="${isoMatrix}" style="cursor: move;">
+        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
+      </g>`
+    } else {
+      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" style="cursor: move;">
+        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
+        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
+      </g>`
+    }
+  }
+
+  // Render target endpoint handle (green - for changing port)
+  const targetPt = edge.points[edge.points.length - 1]
+  if (isIso) {
+    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="target" transform="${isoMatrix}" style="cursor: pointer;">
+      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
+      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
+    </g>`
+  } else {
+    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="target" style="cursor: pointer;">
+      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
+      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
+    </g>`
+  }
+
+  return svg
+}
+
+/**
  * Calculate isometric viewBox bounds
  */
 function getIsoBounds(graph: Graph): { minX: number; minY: number; maxX: number; maxY: number } {
@@ -1352,6 +1428,11 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? graph.edges.map(e => renderPortCoords(e, opts, false)).join('\n')
     : ''
 
+  // Generate waypoint handles if in edit mode
+  const waypointHandlesSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderWaypointHandles(e, opts, false)).join('\n')
+    : ''
+
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
@@ -1385,6 +1466,7 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="nodes">${nodesSvg}</g>
       <g class="edge-coords">${edgeCoordsSvg}</g>
       <g class="port-coords">${portCoordsSvg}</g>
+      <g class="waypoint-handles">${waypointHandlesSvg}</g>
     </g>
   </svg>`
 }
@@ -1461,6 +1543,11 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? graph.edges.map(e => renderPortCoords(e, opts, true)).join('\n')
     : ''
 
+  // Generate waypoint handles if in edit mode
+  const waypointHandlesSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderWaypointHandles(e, opts, true)).join('\n')
+    : ''
+
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
 
@@ -1484,6 +1571,7 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="nodes">${nodesSvg}</g>
       <g class="edge-coords">${edgeCoordsSvg}</g>
       <g class="port-coords">${portCoordsSvg}</g>
+      <g class="waypoint-handles">${waypointHandlesSvg}</g>
     </g>
   </svg>`
 }

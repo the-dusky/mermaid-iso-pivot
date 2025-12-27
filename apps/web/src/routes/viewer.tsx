@@ -8,7 +8,17 @@ import {
   testEdgeCollisions,
   logCollisionReport,
 } from 'isomaid'
-import type { ViewMode, Graph, NavState, CollisionTestResult } from 'isomaid'
+import type {
+  ViewMode,
+  Graph,
+  NavState,
+  CollisionTestResult,
+  InteractionMode,
+  EditingState,
+  DragState,
+} from 'isomaid'
+import { createEmptyEditingState } from 'isomaid'
+import { screenToGraph } from '../utils/coords'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
@@ -49,6 +59,7 @@ const SHOW_GEOFENCES_STORAGE_KEY = 'isomaid-editor-show-geofences'
 const SHOW_EDGE_COORDS_STORAGE_KEY = 'isomaid-editor-show-edge-coords'
 const SHOW_PORT_COORDS_STORAGE_KEY = 'isomaid-editor-show-port-coords'
 const SPLIT_POSITION_STORAGE_KEY = 'isomaid-editor-split-position'
+const INTERACTION_MODE_STORAGE_KEY = 'isomaid-editor-interaction-mode'
 const MAX_HISTORY = 100
 
 function DiagramViewer() {
@@ -109,6 +120,19 @@ function DiagramViewer() {
     }
     return false
   })
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(INTERACTION_MODE_STORAGE_KEY)
+      if (saved === 'view' || saved === 'edit' || saved === 'coord') {
+        return saved
+      }
+    }
+    return 'view'
+  })
+  // Editing state for node/edge position overrides
+  const [editingState, setEditingState] = useState<EditingState>(createEmptyEditingState)
+  // Active drag operation
+  const [dragState, setDragState] = useState<DragState | null>(null)
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(ZOOM_STORAGE_KEY)
@@ -210,6 +234,24 @@ function DiagramViewer() {
     }
   }, [splitPosition])
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(INTERACTION_MODE_STORAGE_KEY, interactionMode)
+    }
+  }, [interactionMode])
+
+  // Clear editing state when source changes (re-parsing resets positions)
+  const prevSourceRef = useRef(source)
+  useEffect(() => {
+    if (prevSourceRef.current !== source) {
+      prevSourceRef.current = source
+      // Only clear if there are actual overrides
+      if (editingState.nodeOverrides.size > 0 || editingState.edgeOverrides.size > 0) {
+        setEditingState(createEmptyEditingState())
+      }
+    }
+  }, [source, editingState.nodeOverrides.size, editingState.edgeOverrides.size])
+
   // Save to localStorage when source changes
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -278,7 +320,7 @@ function DiagramViewer() {
         return hasCollapsedAncestor(node.parent)
       }
 
-      // Create a shallow copy of nodes with collapse metadata added
+      // Create a shallow copy of nodes with collapse metadata and position overrides
       // Keep the full graph structure - don't filter children
       const nodesWithMetadata = new Map()
       for (const [nodeId, node] of graph.nodes) {
@@ -288,19 +330,148 @@ function DiagramViewer() {
         // Check if ANY ancestor is collapsed (so it should be hidden)
         const ancestorIsCollapsed = hasCollapsedAncestor(nodeId)
 
+        // Apply position override if exists
+        const posOverride = editingState.nodeOverrides.get(nodeId)
+        const adjustedX = posOverride ? (node.x || 0) + posOverride.dx : node.x
+        const adjustedY = posOverride ? (node.y || 0) + posOverride.dy : node.y
+
+        // Also adjust port coordinates if there's a position override
+        let adjustedPorts = node.ports
+        if (posOverride && node.ports) {
+          adjustedPorts = node.ports.map(port => ({
+            ...port,
+            closeX: port.closeX !== undefined ? port.closeX + posOverride.dx : undefined,
+            closeY: port.closeY !== undefined ? port.closeY + posOverride.dy : undefined,
+            farX: port.farX !== undefined ? port.farX + posOverride.dx : undefined,
+            farY: port.farY !== undefined ? port.farY + posOverride.dy : undefined,
+            cornerX: port.cornerX !== undefined ? port.cornerX + posOverride.dx : undefined,
+            cornerY: port.cornerY !== undefined ? port.cornerY + posOverride.dy : undefined,
+            x: port.x !== undefined ? port.x + posOverride.dx : undefined,
+            y: port.y !== undefined ? port.y + posOverride.dy : undefined,
+          }))
+        }
+
         nodesWithMetadata.set(nodeId, {
           ...node,
+          x: adjustedX,
+          y: adjustedY,
+          ports: adjustedPorts,
           _collapsed: isCollapsed,
           _hasChildren: hasChildren,
           _hidden: ancestorIsCollapsed,  // Hide if any ancestor is collapsed
         })
       }
 
-      // Filter edges: hide edges where source or target is hidden
+      // Filter edges and adjust endpoints when connected nodes have moved or waypoints have been dragged
       const visibleEdges = graph.edges.filter(edge => {
         const fromNode = nodesWithMetadata.get(edge.from)
         const toNode = nodesWithMetadata.get(edge.to)
         return fromNode && toNode && !fromNode._hidden && !toNode._hidden
+      }).map(edge => {
+        const fromNode = nodesWithMetadata.get(edge.from)
+        const toNode = nodesWithMetadata.get(edge.to)
+        const fromOverride = editingState.nodeOverrides.get(edge.from)
+        const toOverride = editingState.nodeOverrides.get(edge.to)
+        const edgeId = `${edge.from}->${edge.to}`
+        const edgeOverride = editingState.edgeOverrides.get(edgeId)
+
+        // If no changes, return edge unchanged
+        if (!fromOverride && !toOverride && !edgeOverride) {
+          return edge
+        }
+
+        // Clone edge for modification
+        const adjustedEdge = { ...edge }
+
+        // Apply source port override (user changed which port edge connects to)
+        if (edgeOverride?.sourcePortOverride && fromNode?.ports) {
+          const newPort = fromNode.ports[edgeOverride.sourcePortOverride.portIndex]
+          if (newPort) {
+            adjustedEdge.sourcePort = newPort
+          }
+        } else if (fromOverride && edge.sourcePort) {
+          // Adjust source port if source node moved (but no port override)
+          adjustedEdge.sourcePort = {
+            ...edge.sourcePort,
+            closeX: edge.sourcePort.closeX !== undefined ? edge.sourcePort.closeX + fromOverride.dx : undefined,
+            closeY: edge.sourcePort.closeY !== undefined ? edge.sourcePort.closeY + fromOverride.dy : undefined,
+            farX: edge.sourcePort.farX !== undefined ? edge.sourcePort.farX + fromOverride.dx : undefined,
+            farY: edge.sourcePort.farY !== undefined ? edge.sourcePort.farY + fromOverride.dy : undefined,
+            cornerX: edge.sourcePort.cornerX !== undefined ? edge.sourcePort.cornerX + fromOverride.dx : undefined,
+            cornerY: edge.sourcePort.cornerY !== undefined ? edge.sourcePort.cornerY + fromOverride.dy : undefined,
+            x: edge.sourcePort.x !== undefined ? edge.sourcePort.x + fromOverride.dx : undefined,
+            y: edge.sourcePort.y !== undefined ? edge.sourcePort.y + fromOverride.dy : undefined,
+          }
+        }
+
+        // Apply target port override (user changed which port edge connects to)
+        if (edgeOverride?.targetPortOverride && toNode?.ports) {
+          const newPort = toNode.ports[edgeOverride.targetPortOverride.portIndex]
+          if (newPort) {
+            adjustedEdge.targetPort = newPort
+          }
+        } else if (toOverride && edge.targetPort) {
+          // Adjust target port if target node moved (but no port override)
+          adjustedEdge.targetPort = {
+            ...edge.targetPort,
+            closeX: edge.targetPort.closeX !== undefined ? edge.targetPort.closeX + toOverride.dx : undefined,
+            closeY: edge.targetPort.closeY !== undefined ? edge.targetPort.closeY + toOverride.dy : undefined,
+            farX: edge.targetPort.farX !== undefined ? edge.targetPort.farX + toOverride.dx : undefined,
+            farY: edge.targetPort.farY !== undefined ? edge.targetPort.farY + toOverride.dy : undefined,
+            cornerX: edge.targetPort.cornerX !== undefined ? edge.targetPort.cornerX + toOverride.dx : undefined,
+            cornerY: edge.targetPort.cornerY !== undefined ? edge.targetPort.cornerY + toOverride.dy : undefined,
+            x: edge.targetPort.x !== undefined ? edge.targetPort.x + toOverride.dx : undefined,
+            y: edge.targetPort.y !== undefined ? edge.targetPort.y + toOverride.dy : undefined,
+          }
+        }
+
+        // Adjust edge waypoints
+        if (edge.points && edge.points.length > 0) {
+          const adjustedPoints = [...edge.points]
+
+          // If source port was overridden, use the new port position for first waypoint
+          if (edgeOverride?.sourcePortOverride && adjustedEdge.sourcePort) {
+            const port = adjustedEdge.sourcePort
+            if (port.cornerX !== undefined && port.cornerY !== undefined) {
+              adjustedPoints[0] = { x: port.cornerX, y: port.cornerY }
+            }
+          } else if (fromOverride) {
+            // Adjust first waypoint if source node moved
+            adjustedPoints[0] = {
+              x: edge.points[0].x + fromOverride.dx,
+              y: edge.points[0].y + fromOverride.dy,
+            }
+          }
+
+          // If target port was overridden, use the new port position for last waypoint
+          if (edgeOverride?.targetPortOverride && adjustedEdge.targetPort && edge.points.length > 1) {
+            const port = adjustedEdge.targetPort
+            if (port.cornerX !== undefined && port.cornerY !== undefined) {
+              const lastIdx = adjustedPoints.length - 1
+              adjustedPoints[lastIdx] = { x: port.cornerX, y: port.cornerY }
+            }
+          } else if (toOverride && edge.points.length > 1) {
+            // Adjust last waypoint if target node moved
+            const lastIdx = adjustedPoints.length - 1
+            adjustedPoints[lastIdx] = {
+              x: edge.points[lastIdx].x + toOverride.dx,
+              y: edge.points[lastIdx].y + toOverride.dy,
+            }
+          }
+
+          // Apply waypoint overrides (user-dragged middle waypoints)
+          if (edgeOverride) {
+            for (const wp of edgeOverride.waypoints) {
+              if (wp.index >= 0 && wp.index < adjustedPoints.length) {
+                adjustedPoints[wp.index] = { x: wp.x, y: wp.y }
+              }
+            }
+          }
+
+          adjustedEdge.points = adjustedPoints
+        }
+
+        return adjustedEdge
       })
 
       // Create render graph with metadata (no layout recalculation!)
@@ -310,8 +481,9 @@ function DiagramViewer() {
         edges: visibleEdges,
       }
 
-      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}, showEdgeCoords=${showEdgeCoords}, showPortCoords=${showPortCoords}`)
-      const svg = render(renderGraph, { viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords })
+      const showWaypointHandles = interactionMode === 'edit'
+      console.log(`About to render with viewMode=${viewMode}, showPorts=${showPorts}, showGeofences=${showGeofences}, showEdgeCoords=${showEdgeCoords}, showPortCoords=${showPortCoords}, showWaypointHandles=${showWaypointHandles}`)
+      const svg = render(renderGraph, { viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords, showWaypointHandles })
       console.log(`Render completed, svg length=${svg.length}`)
 
       // Run collision test after render
@@ -324,7 +496,7 @@ function DiagramViewer() {
       const errorMessage = err instanceof Error ? err.message : 'Failed to render diagram'
       setPendingError(errorMessage)
     }
-  }, [graph, navState, viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords])
+  }, [graph, navState, viewMode, showPorts, showGeofences, showEdgeCoords, showPortCoords, editingState, interactionMode])
 
   // Debounced parse on source change
   useEffect(() => {
@@ -434,8 +606,11 @@ function DiagramViewer() {
     }
   }, [graph, handleToggleFold])
 
-  // Handle click on diagram canvas to show coordinates
+  // Handle click on diagram canvas to show coordinates (only in coord mode)
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
+    // Only show coordinates in coord mode
+    if (interactionMode !== 'coord') return
+
     const container = diagramContainerRef.current
     if (!container) return
 
@@ -445,20 +620,19 @@ function DiagramViewer() {
     const screenY = e.clientY - rect.top
 
     // Find the SVG's transform group (contains the graph content with offset)
-    const svgElement = container.querySelector('svg')
+    const svgElement = container.querySelector('svg') as SVGSVGElement | null
     const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
 
-    if (transformGroup) {
-      // Use getScreenCTM to get the full transform from screen to SVG coordinates
-      const ctm = transformGroup.getScreenCTM()
-      if (ctm) {
-        // Create a point in screen coordinates and transform to graph coordinates
-        const svgPoint = svgElement!.createSVGPoint()
-        svgPoint.x = e.clientX
-        svgPoint.y = e.clientY
-
-        // Apply inverse transform to get graph coordinates
-        const graphPoint = svgPoint.matrixTransform(ctm.inverse())
+    if (svgElement && transformGroup) {
+      try {
+        // Use the coordinate utility to transform screen to graph coordinates
+        const graphPoint = screenToGraph(
+          e.clientX,
+          e.clientY,
+          svgElement,
+          transformGroup,
+          viewMode
+        )
 
         setClickedCoord({
           x: Math.round(graphPoint.x),
@@ -466,6 +640,8 @@ function DiagramViewer() {
           screenX,
           screenY
         })
+      } catch {
+        // Silently fail if transform not available
       }
     }
 
@@ -473,7 +649,278 @@ function DiagramViewer() {
     setTimeout(() => {
       setClickedCoord(null)
     }, 3000)
-  }, [])
+  }, [interactionMode, viewMode])
+
+  // Handle mousedown for starting drag in edit mode
+  const handleEditMouseDown = useCallback((e: React.MouseEvent) => {
+    if (interactionMode !== 'edit' || !graph) return
+
+    const target = e.target as SVGElement
+
+    // Walk up DOM to find a draggable element
+    let element: SVGElement | null = target
+    while (element && element.tagName !== 'svg') {
+      // Skip if clicking on collapse icon
+      if (element.classList?.contains('collapse-icon')) {
+        return
+      }
+
+      // Check for endpoint handle (green - for changing port connection)
+      if (element.classList?.contains('endpoint-handle') && element.hasAttribute('data-edge-id')) {
+        const edgeId = element.getAttribute('data-edge-id')!
+        const endpointType = element.getAttribute('data-endpoint') as 'source' | 'target'
+
+        // Start endpoint drag
+        setDragState({
+          type: 'endpoint',
+          targetId: edgeId,
+          endpointType,
+          startX: e.clientX,
+          startY: e.clientY,
+          currentX: e.clientX,
+          currentY: e.clientY,
+        })
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+
+      // Check for waypoint handle (orange - for repositioning)
+      if (element.classList?.contains('waypoint-handle') && element.hasAttribute('data-edge-id')) {
+        const edgeId = element.getAttribute('data-edge-id')!
+        const waypointIndex = parseInt(element.getAttribute('data-waypoint-index') || '0', 10)
+
+        // Start waypoint drag
+        setDragState({
+          type: 'waypoint',
+          targetId: edgeId,
+          waypointIndex,
+          startX: e.clientX,
+          startY: e.clientY,
+          currentX: e.clientX,
+          currentY: e.clientY,
+        })
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+
+      // Check for node
+      if (element.classList?.contains('node') && element.hasAttribute('data-id')) {
+        const nodeId = element.getAttribute('data-id')!
+        const node = graph.nodes.get(nodeId)
+
+        if (node) {
+          // Start node drag
+          setDragState({
+            type: 'node',
+            targetId: nodeId,
+            startX: e.clientX,
+            startY: e.clientY,
+            currentX: e.clientX,
+            currentY: e.clientY,
+          })
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
+
+      element = element.parentElement as SVGElement | null
+    }
+  }, [interactionMode, graph])
+
+  // Handle mouse move during drag
+  const handleEditMouseMove = useCallback((e: MouseEvent) => {
+    if (!dragState) return
+
+    setDragState(prev => prev ? {
+      ...prev,
+      currentX: e.clientX,
+      currentY: e.clientY,
+    } : null)
+  }, [dragState])
+
+  // Handle mouse up to complete drag
+  const handleEditMouseUp = useCallback((_e: MouseEvent) => {
+    if (!dragState || !graph) {
+      setDragState(null)
+      return
+    }
+
+    const container = diagramContainerRef.current
+    const svgElement = container?.querySelector('svg') as SVGSVGElement | null
+    const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
+
+    if (!svgElement || !transformGroup) {
+      setDragState(null)
+      return
+    }
+
+    try {
+      // Calculate delta in graph coordinates
+      const startGraph = screenToGraph(
+        dragState.startX,
+        dragState.startY,
+        svgElement,
+        transformGroup,
+        viewMode
+      )
+      const endGraph = screenToGraph(
+        dragState.currentX,
+        dragState.currentY,
+        svgElement,
+        transformGroup,
+        viewMode
+      )
+
+      const dx = endGraph.x - startGraph.x
+      const dy = endGraph.y - startGraph.y
+
+      // Only apply if there's meaningful movement
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        if (dragState.type === 'node') {
+          // Apply node position override
+          setEditingState(prev => {
+            const newOverrides = new Map(prev.nodeOverrides)
+            const existing = newOverrides.get(dragState.targetId)
+
+            newOverrides.set(dragState.targetId, {
+              nodeId: dragState.targetId,
+              dx: (existing?.dx || 0) + dx,
+              dy: (existing?.dy || 0) + dy,
+            })
+
+            return {
+              ...prev,
+              nodeOverrides: newOverrides,
+            }
+          })
+        } else if (dragState.type === 'waypoint' && dragState.waypointIndex !== undefined) {
+          // Apply waypoint position override
+          const edgeId = dragState.targetId
+          const waypointIndex = dragState.waypointIndex
+
+          // Find the edge to get the original waypoint position
+          const edge = graph.edges.find(e => `${e.from}->${e.to}` === edgeId)
+          if (edge?.points && edge.points[waypointIndex]) {
+            const originalPoint = edge.points[waypointIndex]
+
+            setEditingState(prev => {
+              const newOverrides = new Map(prev.edgeOverrides)
+              const existing = newOverrides.get(edgeId)
+
+              // Get existing waypoints or create new array
+              const existingWaypoints = existing?.waypoints || []
+
+              // Find if we already have an override for this waypoint
+              const existingWaypointIdx = existingWaypoints.findIndex(w => w.index === waypointIndex)
+
+              let newWaypoints
+              if (existingWaypointIdx >= 0) {
+                // Update existing waypoint override
+                newWaypoints = [...existingWaypoints]
+                newWaypoints[existingWaypointIdx] = {
+                  index: waypointIndex,
+                  x: existingWaypoints[existingWaypointIdx].x + dx,
+                  y: existingWaypoints[existingWaypointIdx].y + dy,
+                }
+              } else {
+                // Add new waypoint override
+                newWaypoints = [...existingWaypoints, {
+                  index: waypointIndex,
+                  x: originalPoint.x + dx,
+                  y: originalPoint.y + dy,
+                }]
+              }
+
+              newOverrides.set(edgeId, {
+                edgeId,
+                waypoints: newWaypoints,
+              })
+
+              return {
+                ...prev,
+                edgeOverrides: newOverrides,
+              }
+            })
+          }
+        } else if (dragState.type === 'endpoint' && dragState.endpointType) {
+          // Apply endpoint port override - find nearest port on the connected node
+          const edgeId = dragState.targetId
+          const endpointType = dragState.endpointType
+
+          // Find the edge
+          const edge = graph.edges.find(e => `${e.from}->${e.to}` === edgeId)
+          if (edge) {
+            // Get the node we're connecting to
+            const nodeId = endpointType === 'source' ? edge.from : edge.to
+            const node = graph.nodes.get(nodeId)
+
+            if (node?.ports && node.ports.length > 0) {
+              // Find the nearest port to the drop position
+              let nearestPortIndex = 0
+              let nearestDistance = Infinity
+
+              for (let i = 0; i < node.ports.length; i++) {
+                const port = node.ports[i]
+                if (port.cornerX !== undefined && port.cornerY !== undefined) {
+                  const dist = Math.hypot(
+                    endGraph.x - port.cornerX,
+                    endGraph.y - port.cornerY
+                  )
+                  if (dist < nearestDistance) {
+                    nearestDistance = dist
+                    nearestPortIndex = i
+                  }
+                }
+              }
+
+              // Store the port override
+              setEditingState(prev => {
+                const newOverrides = new Map(prev.edgeOverrides)
+                const existing = newOverrides.get(edgeId)
+
+                const newOverride = {
+                  edgeId,
+                  waypoints: existing?.waypoints || [],
+                  sourcePortOverride: endpointType === 'source'
+                    ? { portIndex: nearestPortIndex }
+                    : existing?.sourcePortOverride,
+                  targetPortOverride: endpointType === 'target'
+                    ? { portIndex: nearestPortIndex }
+                    : existing?.targetPortOverride,
+                }
+
+                newOverrides.set(edgeId, newOverride)
+
+                return {
+                  ...prev,
+                  edgeOverrides: newOverrides,
+                }
+              })
+            }
+          }
+        }
+      }
+    } catch {
+      // Silently fail if transform not available
+    }
+
+    setDragState(null)
+  }, [dragState, graph, viewMode])
+
+  // Attach mouse move/up listeners when dragging
+  useEffect(() => {
+    if (dragState) {
+      document.addEventListener('mousemove', handleEditMouseMove)
+      document.addEventListener('mouseup', handleEditMouseUp)
+      return () => {
+        document.removeEventListener('mousemove', handleEditMouseMove)
+        document.removeEventListener('mouseup', handleEditMouseUp)
+      }
+    }
+  }, [dragState, handleEditMouseMove, handleEditMouseUp])
 
   useEffect(() => {
     if (isResizing) {
@@ -673,6 +1120,54 @@ function DiagramViewer() {
               )}
             </button>
 
+            {/* Interaction Mode Toggle */}
+            <div className="flex items-center gap-1 bg-slate-700 rounded-lg p-1">
+              <button
+                onClick={() => setInteractionMode('view')}
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  interactionMode === 'view'
+                    ? 'bg-slate-600 text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+                title="View mode: Pan and zoom"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                <span className="hidden sm:inline">View</span>
+              </button>
+              <button
+                onClick={() => setInteractionMode('edit')}
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  interactionMode === 'edit'
+                    ? 'bg-amber-500 text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+                title="Edit mode: Drag nodes and waypoints"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                <span className="hidden sm:inline">Edit</span>
+              </button>
+              <button
+                onClick={() => setInteractionMode('coord')}
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  interactionMode === 'coord'
+                    ? 'bg-cyan-500 text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+                title="Coord mode: Click to show coordinates"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span className="hidden sm:inline">Coord</span>
+              </button>
+            </div>
+
             {/* View Mode Toggle */}
             <div className="flex items-center gap-2 bg-slate-700 rounded-lg p-1">
               <button
@@ -833,7 +1328,11 @@ function DiagramViewer() {
           {/* Diagram Content */}
           <div
             ref={diagramContainerRef}
-            className="flex-1 overflow-hidden relative bg-slate-900 cursor-crosshair"
+            className={`flex-1 overflow-hidden relative bg-slate-900 ${
+              interactionMode === 'edit' ? 'cursor-move' :
+              interactionMode === 'coord' ? 'cursor-crosshair' :
+              'cursor-grab'
+            }`}
             onClick={handleCanvasClick}
           >
             {/* Show visible error (only when Check is clicked) */}
@@ -935,6 +1434,7 @@ function DiagramViewer() {
                     dangerouslySetInnerHTML={{ __html: svg }}
                     className="diagram-container"
                     onClick={handleDiagramClick}
+                    onMouseDown={handleEditMouseDown}
                   />
                 </div>
               )}
@@ -953,6 +1453,13 @@ function DiagramViewer() {
       <div className="flex-shrink-0 bg-slate-800 border-t border-slate-700 px-6 py-2">
         <div className="text-sm text-gray-400 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-wrap">
+            <span>
+              Mode: <span className={`${
+                interactionMode === 'edit' ? 'text-amber-400' :
+                interactionMode === 'coord' ? 'text-cyan-400' :
+                'text-gray-400'
+              }`}>{interactionMode}</span>
+            </span>
             <span>
               View: <span className="text-cyan-400">{viewMode}</span>
             </span>
