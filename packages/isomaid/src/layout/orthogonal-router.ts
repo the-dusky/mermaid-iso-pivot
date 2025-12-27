@@ -223,41 +223,17 @@ function calculateLPathDistance(
 const COLLISION_PENALTY = 200
 
 /**
- * Build an L-path between two points for collision testing
- * Returns the path points (2-4 points depending on alignment)
+ * Build a test path between two points for collision testing
+ * Uses same logic as buildOrthogonalPath to ensure consistency
  */
-function buildTestLPath(
+function buildTestPath(
   from: { x: number; y: number },
   to: { x: number; y: number },
-  preferHorizontalFirst: boolean
+  fromSide: Side,
+  toSide: Side
 ): { x: number; y: number }[] {
-  // If already aligned on one axis, direct path
-  if (Math.abs(from.x - to.x) < 2) {
-    return [from, to]
-  }
-  if (Math.abs(from.y - to.y) < 2) {
-    return [from, to]
-  }
-
-  // L-path with single turn at midpoint (biased toward source)
-  const bias = 0.4
-  if (preferHorizontalFirst) {
-    const midX = from.x + (to.x - from.x) * bias
-    return [
-      from,
-      { x: midX, y: from.y },
-      { x: midX, y: to.y },
-      to
-    ]
-  } else {
-    const midY = from.y + (to.y - from.y) * bias
-    return [
-      from,
-      { x: from.x, y: midY },
-      { x: to.x, y: midY },
-      to
-    ]
-  }
+  // Delegate to the same function used for actual paths
+  return buildOrthogonalPath(from, to, fromSide, toSide)
 }
 
 /**
@@ -447,15 +423,12 @@ function getConnectionPoints(
       // Calculate collision penalty if geofence data is available
       let collisionPenalty = 0
       if (geofenceData) {
-        // Determine path direction preference based on sides
-        const preferHorizontalFirst = (fromSide === 'left' || fromSide === 'right') ||
-          (toSide === 'top' || toSide === 'bottom')
-
-        // Build test path and count collisions
-        const testPath = buildTestLPath(
+        // Build test path using same logic as actual rendering
+        const testPath = buildTestPath(
           { x: fromPos.x, y: fromPos.y },
           { x: toPos.x, y: toPos.y },
-          preferHorizontalFirst
+          fromSide,
+          toSide
         )
         const collisions = countPathCollisions(testPath, geofenceData, excludeNodeIds, excludeSubgraphIds)
         collisionPenalty = collisions * COLLISION_PENALTY
@@ -566,7 +539,104 @@ export function findEdgeCrossings(edges: Edge[]): Map<Edge, { x: number; y: numb
 }
 
 /**
+ * Count turns in a path (direction changes)
+ */
+function countTurns(points: { x: number; y: number }[]): number {
+  if (points.length < 3) return 0
+  let turns = 0
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1]
+    const curr = points[i]
+    const next = points[i + 1]
+    const dx1 = curr.x - prev.x
+    const dy1 = curr.y - prev.y
+    const dx2 = next.x - curr.x
+    const dy2 = next.y - curr.y
+    const isHorizontal1 = Math.abs(dx1) > Math.abs(dy1)
+    const isHorizontal2 = Math.abs(dx2) > Math.abs(dy2)
+    if (isHorizontal1 !== isHorizontal2) turns++
+  }
+  return turns
+}
+
+/**
+ * Calculate Manhattan distance for a path
+ */
+function pathDistance(points: { x: number; y: number }[]): number {
+  let dist = 0
+  for (let i = 1; i < points.length; i++) {
+    dist += Math.abs(points[i].x - points[i-1].x) + Math.abs(points[i].y - points[i-1].y)
+  }
+  return dist
+}
+
+interface RouteCandidate {
+  points: { x: number; y: number }[]
+  fromPt: ConnectionPoint
+  toPt: ConnectionPoint
+  collisions: number
+  distance: number
+  turns: number
+}
+
+/**
+ * Route a single edge and return the result with full metrics
+ */
+function routeSingleEdge(
+  fromNode: Node,
+  toNode: Node,
+  graph: Graph,
+  geofenceData: GeofenceData,
+  fromSide: Side,
+  toSide: Side
+): RouteCandidate {
+  const fromPos = getPortPosition(fromNode, fromSide, undefined, graph, geofenceData.labelGeofences)
+  const toPos = getPortPosition(toNode, toSide, undefined, graph, geofenceData.labelGeofences)
+
+  const fromPt: ConnectionPoint = {
+    x: fromPos.x,
+    y: fromPos.y,
+    side: fromSide,
+    waypoint: { x: fromPos.x, y: fromPos.y },
+    port: fromPos.port
+  }
+  const toPt: ConnectionPoint = {
+    x: toPos.x,
+    y: toPos.y,
+    side: toSide,
+    waypoint: { x: toPos.x, y: toPos.y },
+    port: toPos.port
+  }
+
+  const middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, fromSide, toSide)
+  const points = [
+    { x: fromPt.x, y: fromPt.y },
+    ...middlePath,
+    { x: toPt.x, y: toPt.y }
+  ]
+
+  // Count collisions for this path
+  const excludeNodeIds = [fromNode.id, toNode.id]
+  const excludeSubgraphIds: string[] = []
+  if (fromNode.parent) excludeSubgraphIds.push(fromNode.parent)
+  if (toNode.parent && !excludeSubgraphIds.includes(toNode.parent)) {
+    excludeSubgraphIds.push(toNode.parent)
+  }
+
+  const collisions = countPathCollisions(points, geofenceData, excludeNodeIds, excludeSubgraphIds)
+  const distance = pathDistance(points)
+  const turns = countTurns(points)
+
+  return { points, fromPt, toPt, collisions, distance, turns }
+}
+
+/**
  * Route edges orthogonally around obstacles
+ *
+ * Routing priority (in order):
+ * 1. Zero collisions (must not collide with geofences)
+ * 2. Shortest distance (closest port combination)
+ * 3. Fewest turns (minimize path complexity)
  */
 export function routeEdgesOrthogonal(
   graph: Graph,
@@ -574,6 +644,7 @@ export function routeEdgesOrthogonal(
 ): void {
   // Generate geofences for port blocking (not for A* routing)
   const geofenceData = generateGeofences(graph)
+  const allSides: Side[] = ['top', 'bottom', 'left', 'right']
 
   // Route each edge
   for (const edge of graph.edges) {
@@ -583,31 +654,44 @@ export function routeEdgesOrthogonal(
     if (fromNode.x === undefined || fromNode.y === undefined) continue
     if (toNode.x === undefined || toNode.y === undefined) continue
 
-    // Get connection points from ports (ports already have offset built in)
-    // Pass labelGeofences and full geofenceData for collision-aware routing
-    const { from: fromPt, to: toPt } = getConnectionPoints(
-      fromNode, toNode, graph, geofenceData.labelGeofences, geofenceData
-    )
+    // Generate ALL 16 port combination candidates
+    const candidates: RouteCandidate[] = []
+    for (const fromSide of allSides) {
+      for (const toSide of allSides) {
+        const candidate = routeSingleEdge(
+          fromNode, toNode, graph, geofenceData,
+          fromSide, toSide
+        )
+        candidates.push(candidate)
+      }
+    }
 
-    // Save port sides to edge so renderer can find the ports
-    edge.fromPort = sideToPortSide(fromPt.side)
-    edge.toPort = sideToPortSide(toPt.side)
+    // Sort candidates by priority:
+    // 1. Collisions (0 first - collision-free paths win)
+    // 2. Distance (shorter is better)
+    // 3. Turns (fewer is better)
+    candidates.sort((a, b) => {
+      // First: prioritize collision-free
+      if (a.collisions !== b.collisions) {
+        return a.collisions - b.collisions
+      }
+      // Second: shorter distance
+      if (a.distance !== b.distance) {
+        return a.distance - b.distance
+      }
+      // Third: fewer turns
+      return a.turns - b.turns
+    })
 
-    // Save full port objects for unified edge rendering (close/far coordinates)
-    edge.sourcePort = fromPt.port
-    edge.targetPort = toPt.port
+    // Pick the best candidate
+    const best = candidates[0]
 
-    // Use simple orthogonal routing (not A* - that creates zigzag paths)
-    const preferHorizontalFirst = Math.abs(toPt.waypoint.x - fromPt.waypoint.x) >
-                                   Math.abs(toPt.waypoint.y - fromPt.waypoint.y)
-    const middlePath = buildOrthogonalPath(fromPt.waypoint, toPt.waypoint, preferHorizontalFirst)
-
-    // Build full path: edge -> waypoint path -> edge
-    edge.points = [
-      { x: fromPt.x, y: fromPt.y },  // Start at source edge
-      ...middlePath,                  // Through waypoints with orthogonal routing
-      { x: toPt.x, y: toPt.y },       // End at target edge
-    ]
+    // Apply the best result to the edge
+    edge.fromPort = sideToPortSide(best.fromPt.side)
+    edge.toPort = sideToPortSide(best.toPt.side)
+    edge.sourcePort = best.fromPt.port
+    edge.targetPort = best.toPt.port
+    edge.points = best.points
   }
 
   // Find and store edge crossings
@@ -618,49 +702,107 @@ export function routeEdgesOrthogonal(
 }
 
 /**
- * Build a simple orthogonal path between two waypoints
- * Places turns centrally between source and target, with bias toward source
+ * Build an orthogonal path with MINIMAL turns while respecting port directions
  *
- * Central turn strategy:
- * - Calculate midpoint between from and to
- * - Bias slightly toward source (40% from source, 60% toward target)
- * - This keeps the routing balanced but visually favors source proximity
+ * Turn minimization strategy:
+ * - 0 turns: if already aligned on X or Y axis (direct line)
+ * - 1 turn: when L-path doesn't violate port directions
+ * - 2 turns: when port directions conflict with target position
+ *
+ * Port direction rules:
+ * - Right port: first segment must go right (dx > 0)
+ * - Left port: first segment must go left (dx < 0)
+ * - Bottom port: first segment must go down (dy > 0)
+ * - Top port: first segment must go up (dy < 0)
  */
 function buildOrthogonalPath(
   from: { x: number; y: number },
   to: { x: number; y: number },
-  preferHorizontalFirst: boolean = true
+  fromSide: Side,
+  toSide: Side
 ): { x: number; y: number }[] {
-  // If already aligned on one axis, just return direct path
-  if (Math.abs(from.x - to.x) < 2) {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+
+  // 0 turns: already aligned on one axis, direct path
+  if (Math.abs(dx) < 2) {
     return [from, to]
   }
-  if (Math.abs(from.y - to.y) < 2) {
+  if (Math.abs(dy) < 2) {
     return [from, to]
   }
 
-  // Bias factor: 0.5 = center, lower = closer to source
-  const bias = 0.4
+  // Determine required initial and final directions based on ports
+  // Exit direction: which way must we go first?
+  const mustGoRight = fromSide === 'right'
+  const mustGoLeft = fromSide === 'left'
+  const mustGoDown = fromSide === 'bottom'
+  const mustGoUp = fromSide === 'top'
 
-  // Need corner points - place turns centrally with source bias
-  if (preferHorizontalFirst) {
-    // Go horizontal first (X changes), then vertical (Y changes)
-    // Turn line is at midpoint X between from.x and to.x, biased toward source
-    const midX = from.x + (to.x - from.x) * bias
+  // Entry direction: which way must we approach from?
+  // (opposite of port side - entering left port means approaching from left, going right)
+  const mustApproachFromLeft = toSide === 'left'   // final dx > 0
+  const mustApproachFromRight = toSide === 'right' // final dx < 0
+  const mustApproachFromTop = toSide === 'top'     // final dy > 0
+  const mustApproachFromBottom = toSide === 'bottom' // final dy < 0
+
+  // Check if simple L-path is valid (1 turn)
+  // L-path horizontal-first: from → (to.x, from.y) → to
+  // L-path vertical-first: from → (from.x, to.y) → to
+
+  // Try horizontal-first L-path
+  const hFirstValid =
+    // First segment is horizontal (from.y constant, x changes)
+    ((!mustGoRight || dx > 0) && (!mustGoLeft || dx < 0) && !mustGoDown && !mustGoUp) &&
+    // Second segment is vertical (to.x constant, y changes)
+    ((!mustApproachFromTop || dy > 0) && (!mustApproachFromBottom || dy < 0))
+
+  // Try vertical-first L-path
+  const vFirstValid =
+    // First segment is vertical (from.x constant, y changes)
+    ((!mustGoDown || dy > 0) && (!mustGoUp || dy < 0) && !mustGoRight && !mustGoLeft) &&
+    // Second segment is horizontal (to.y constant, x changes)
+    ((!mustApproachFromLeft || dx > 0) && (!mustApproachFromRight || dx < 0))
+
+  if (hFirstValid) {
+    // 1 turn: horizontal then vertical
     return [
       from,
-      { x: midX, y: from.y },  // First turn: go horizontal to midpoint
-      { x: midX, y: to.y },    // Second turn: go vertical at midpoint
+      { x: to.x, y: from.y },
+      to
+    ]
+  }
+
+  if (vFirstValid) {
+    // 1 turn: vertical then horizontal
+    return [
+      from,
+      { x: from.x, y: to.y },
+      to
+    ]
+  }
+
+  // 2 turns required: port directions conflict with simple L-path
+  // Use bias to place the turn aesthetically (40% from source)
+  const bias = 0.4
+
+  // Determine which direction we MUST go first based on exit port
+  if (mustGoRight || mustGoLeft) {
+    // Must start horizontal, then need 2 turns
+    const midX = from.x + dx * bias
+    return [
+      from,
+      { x: midX, y: from.y },
+      { x: midX, y: to.y },
       to
     ]
   } else {
-    // Go vertical first (Y changes), then horizontal (X changes)
-    // Turn line is at midpoint Y between from.y and to.y, biased toward source
-    const midY = from.y + (to.y - from.y) * bias
+    // Must start vertical (mustGoDown || mustGoUp), then need 2 turns
+    const midY = from.y + dy * bias
     return [
       from,
-      { x: from.x, y: midY },  // First turn: go vertical to midpoint
-      { x: to.x, y: midY },    // Second turn: go horizontal at midpoint
+      { x: from.x, y: midY },
+      { x: to.x, y: midY },
       to
     ]
   }
