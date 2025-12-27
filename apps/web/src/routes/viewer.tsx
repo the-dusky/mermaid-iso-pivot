@@ -1033,17 +1033,27 @@ function DiagramViewer() {
     }
   }, [interactionMode, graph, viewMode])
 
-  // Attach mouse move/up listeners when dragging
+  // Handle ESC key to cancel active drag
+  const handleEscKey = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape' && dragState) {
+      setDragState(null)
+      e.preventDefault()
+    }
+  }, [dragState])
+
+  // Attach mouse move/up/keydown listeners when dragging
   useEffect(() => {
     if (dragState) {
       document.addEventListener('mousemove', handleEditMouseMove)
       document.addEventListener('mouseup', handleEditMouseUp)
+      document.addEventListener('keydown', handleEscKey)
       return () => {
         document.removeEventListener('mousemove', handleEditMouseMove)
         document.removeEventListener('mouseup', handleEditMouseUp)
+        document.removeEventListener('keydown', handleEscKey)
       }
     }
-  }, [dragState, handleEditMouseMove, handleEditMouseUp])
+  }, [dragState, handleEditMouseMove, handleEditMouseUp, handleEscKey])
 
   useEffect(() => {
     if (isResizing) {
@@ -1098,6 +1108,14 @@ function DiagramViewer() {
     setPendingError(null)
     setVisibleError(null)
   }, [])
+
+  // Reset editing overrides (clear all node/edge position changes)
+  const handleResetEditing = useCallback(() => {
+    setEditingState(createEmptyEditingState())
+  }, [])
+
+  // Check if there are any editing overrides
+  const hasEditingOverrides = editingState.nodeOverrides.size > 0 || editingState.edgeOverrides.size > 0
 
   // Zoom handlers
   const handleZoomIn = useCallback(() => {
@@ -1270,7 +1288,8 @@ function DiagramViewer() {
                 title="Edit mode: Drag nodes and waypoints"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 13l6 6" />
                 </svg>
                 <span className="hidden sm:inline">Edit</span>
               </button>
@@ -1290,6 +1309,20 @@ function DiagramViewer() {
                 <span className="hidden sm:inline">Coord</span>
               </button>
             </div>
+
+            {/* Reset Editing Button - visible when there are overrides */}
+            {hasEditingOverrides && (
+              <button
+                onClick={handleResetEditing}
+                className="px-3 py-1.5 text-sm text-amber-400 hover:text-amber-300 hover:bg-amber-900/30 rounded-md transition-colors flex items-center gap-1.5"
+                title="Reset all node/edge position changes"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span className="hidden sm:inline">Reset Layout</span>
+              </button>
+            )}
 
             {/* View Mode Toggle */}
             <div className="flex items-center gap-2 bg-slate-700 rounded-lg p-1">
@@ -1452,6 +1485,7 @@ function DiagramViewer() {
           <div
             ref={diagramContainerRef}
             className={`flex-1 overflow-hidden relative bg-slate-900 ${
+              dragState ? 'cursor-grabbing' :
               interactionMode === 'edit' ? 'cursor-move' :
               interactionMode === 'coord' ? 'cursor-crosshair' :
               'cursor-grab'
