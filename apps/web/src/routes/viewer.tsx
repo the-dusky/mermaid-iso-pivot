@@ -1486,7 +1486,7 @@ function DiagramViewer() {
             ref={diagramContainerRef}
             className={`flex-1 overflow-hidden relative bg-slate-900 ${
               dragState ? 'cursor-grabbing' :
-              interactionMode === 'edit' ? 'cursor-move' :
+              interactionMode === 'edit' ? 'cursor-pointer' :
               interactionMode === 'coord' ? 'cursor-crosshair' :
               'cursor-grab'
             }`}
