@@ -18,7 +18,7 @@ export default function Header() {
         <h1 className="ml-4 text-xl font-bold">
           <Link to="/" className="flex items-center gap-2">
             <Box className="w-6 h-6 text-cyan-400" />
-            <span className="bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+            <span className="bg-linear-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
               isomaid
             </span>
           </Link>

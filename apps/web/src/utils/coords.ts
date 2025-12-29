@@ -139,3 +139,94 @@ export function closestPointOnSegment(
     y: y1 + t * dy,
   }
 }
+
+/**
+ * Determine if an orthogonal segment is horizontal or vertical.
+ * Returns 'horizontal', 'vertical', or 'point' if degenerate.
+ */
+export function getSegmentOrientation(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+): 'horizontal' | 'vertical' | 'point' {
+  const dx = Math.abs(x2 - x1)
+  const dy = Math.abs(y2 - y1)
+
+  // Use a small threshold for floating point comparison
+  const threshold = 0.1
+
+  if (dx < threshold && dy < threshold) {
+    return 'point'
+  }
+
+  // For orthogonal edges, one dimension should dominate
+  return dx > dy ? 'horizontal' : 'vertical'
+}
+
+/**
+ * For perpendicular segment dragging:
+ * Given a drag delta and segment orientation, constrain the drag
+ * to the perpendicular direction only.
+ *
+ * - Horizontal segment -> only allow vertical movement (dy)
+ * - Vertical segment -> only allow horizontal movement (dx)
+ */
+export function constrainToPerpendicular(
+  dx: number,
+  dy: number,
+  orientation: 'horizontal' | 'vertical' | 'point'
+): { dx: number; dy: number } {
+  if (orientation === 'horizontal') {
+    // Horizontal segment: only allow vertical drag
+    return { dx: 0, dy }
+  } else if (orientation === 'vertical') {
+    // Vertical segment: only allow horizontal drag
+    return { dx, dy: 0 }
+  }
+  // Point or unknown: no movement
+  return { dx: 0, dy: 0 }
+}
+
+/**
+ * Hit test: find the edge segment closest to a point.
+ * Returns the edge ID, segment index (between waypoints), and distance.
+ * Segment index i means the segment between points[i] and points[i+1].
+ */
+export interface SegmentHitResult {
+  edgeId: string
+  segmentIndex: number
+  distance: number
+  orientation: 'horizontal' | 'vertical' | 'point'
+}
+
+export function findNearestSegment(
+  px: number,
+  py: number,
+  edges: Array<{ id: string; points?: Array<{ x: number; y: number }> }>,
+  maxDistance: number = 15
+): SegmentHitResult | null {
+  let nearest: SegmentHitResult | null = null
+
+  for (const edge of edges) {
+    if (!edge.points || edge.points.length < 2) continue
+
+    for (let i = 0; i < edge.points.length - 1; i++) {
+      const p1 = edge.points[i]
+      const p2 = edge.points[i + 1]
+
+      const dist = pointToSegmentDistance(px, py, p1.x, p1.y, p2.x, p2.y)
+
+      if (dist <= maxDistance && (!nearest || dist < nearest.distance)) {
+        nearest = {
+          edgeId: edge.id,
+          segmentIndex: i,
+          distance: dist,
+          orientation: getSegmentOrientation(p1.x, p1.y, p2.x, p2.y)
+        }
+      }
+    }
+  }
+
+  return nearest
+}

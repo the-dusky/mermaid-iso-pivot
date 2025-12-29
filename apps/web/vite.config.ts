@@ -6,9 +6,11 @@ import viteTsConfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 import { nitro } from 'nitro/vite'
 
+const devtoolsPort = parseInt(process.env.DEVTOOLS_PORT ?? '42069', 10)
+
 const config = defineConfig({
   plugins: [
-    devtools(),
+    devtools({ eventBusConfig: { port: devtoolsPort } }),
     nitro({
       preset: 'vercel',
     }),

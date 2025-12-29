@@ -743,10 +743,12 @@ export function routeEdgesOrthogonal(
     edge.toPort = sideToPortSide(best.toPt.side)
     edge.sourcePort = best.fromPt.port
     edge.targetPort = best.toPt.port
-    edge.points = best.points
+
+    // Simplify path by removing redundant collinear points
+    edge.points = simplifyPath(best.points)
 
     // Add to routed edges for future crossing detection
-    routedEdges.push({ points: best.points })
+    routedEdges.push({ points: edge.points })
   }
 
   // Find and store edge crossings (for bridge rendering)
@@ -754,6 +756,58 @@ export function routeEdgesOrthogonal(
   for (const [edge, points] of crossings) {
     edge.crossings = points
   }
+}
+
+/**
+ * Simplify path by removing redundant collinear points
+ *
+ * Eliminates unnecessary points from orthogonal paths - only keeps
+ * points where the path actually changes direction.
+ *
+ * From: https://gist.github.com/jose-mdz/4a8894c152383b9d7a870c24a04447e4
+ */
+function simplifyPath(points: { x: number; y: number }[]): { x: number; y: number }[] {
+  if (points.length <= 2) {
+    return points
+  }
+
+  const result: { x: number; y: number }[] = [points[0]]
+
+  for (let i = 1; i < points.length; i++) {
+    const cur = points[i]
+
+    // Always include the last point
+    if (i === points.length - 1) {
+      result.push(cur)
+      break
+    }
+
+    const prev = points[i - 1]
+    const next = points[i + 1]
+
+    // Check if this point represents a bend (direction change)
+    // For orthogonal paths: check if prev→cur and cur→next are in different directions
+    const dx1 = cur.x - prev.x
+    const dy1 = cur.y - prev.y
+    const dx2 = next.x - cur.x
+    const dy2 = next.y - cur.y
+
+    // Determine if segments are horizontal or vertical
+    const isHorizontal1 = Math.abs(dx1) > Math.abs(dy1)
+    const isHorizontal2 = Math.abs(dx2) > Math.abs(dy2)
+
+    // If direction changes (horizontal to vertical or vice versa), keep the point
+    // Also handle zero-length segments by checking actual movement
+    const hasBend = isHorizontal1 !== isHorizontal2 ||
+                    (Math.abs(dx1) < 0.1 && Math.abs(dy1) < 0.1) ||
+                    (Math.abs(dx2) < 0.1 && Math.abs(dy2) < 0.1)
+
+    if (hasBend) {
+      result.push(cur)
+    }
+  }
+
+  return result
 }
 
 /**

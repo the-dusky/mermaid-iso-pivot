@@ -409,6 +409,70 @@ function renderIsoGeofence(geofence: NodeGeofence): string {
 }
 
 /**
+ * Generate CSS styles for edit mode (hover states, cursors)
+ */
+function getEditModeStyles(): string {
+  return `<style>
+    /* Regular nodes (not subgraphs) are draggable anywhere */
+    .isomaid-diagram[data-edit-mode="true"] .node:not(.subgraph) {
+      cursor: grab;
+    }
+    .isomaid-diagram[data-edit-mode="true"] .node:not(.subgraph):hover {
+      filter: brightness(0.95);
+    }
+    /* Subgraphs only show drag handle on hover - not draggable by clicking body */
+    .isomaid-diagram[data-edit-mode="true"] .node.subgraph:hover .drag-handle {
+      opacity: 1;
+    }
+    .isomaid-diagram[data-edit-mode="true"] .node.subgraph .drag-handle {
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      cursor: grab;
+    }
+    .isomaid-diagram[data-edit-mode="true"] .segment-hit-area {
+      pointer-events: stroke;
+    }
+  </style>`
+}
+
+/**
+ * Render drag handle icon for a subgraph node (appears in bottom-right corner, next to collapse icon)
+ * Shows a 4-way arrow move icon. Only rendered for subgraphs.
+ */
+function renderDragHandle(node: Node, isIso: boolean = false): string {
+  // Only render drag handle for subgraphs
+  if (!node.isSubgraph) {
+    return ''
+  }
+
+  const w = node.width || 100
+  const h = node.height || 40
+
+  // Position at bottom-right corner (offset from collapse icon which is at w/2 - 12)
+  const handleX = w / 2 - 32  // Left of collapse icon
+  const handleY = h / 2 - 8
+  const size = 14
+
+  // 4-way arrow move icon
+  const iconPath = `M0,-5 L0,-3 L-2,-3 L0,-6 L2,-3 L0,-3 M0,5 L0,3 L-2,3 L0,6 L2,3 L0,3 M-5,0 L-3,0 L-3,-2 L-6,0 L-3,2 L-3,0 M5,0 L3,0 L3,-2 L6,0 L3,2 L3,0`
+
+  if (isIso) {
+    const cos30 = 0.866
+    const sin30 = 0.5
+    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+    return `<g class="drag-handle" data-node-id="${node.id}" transform="translate(${handleX}, ${handleY})">
+      <circle r="${size / 2 + 2}" fill="white" stroke="#94a3b8" stroke-width="1" opacity="0.9" />
+      <path d="${iconPath}" fill="#64748b" transform="scale(0.8) ${isoMatrix}" />
+    </g>`
+  }
+
+  return `<g class="drag-handle" data-node-id="${node.id}" transform="translate(${handleX}, ${handleY})">
+    <circle r="${size / 2 + 2}" fill="white" stroke="#94a3b8" stroke-width="1" opacity="0.9" />
+    <path d="${iconPath}" fill="#64748b" transform="scale(0.8)" />
+  </g>`
+}
+
+/**
  * Generate SVG defs for geofence pattern (caution stripes)
  */
 function getGeofencePatternDef(): string {
@@ -563,6 +627,9 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
   const collapseIconSvg = renderCollapseIcon(nodeExt, flatTransform, renderNode.x!, renderNode.y!, false)
 
+  // Render drag handle for edit mode
+  const dragHandleSvg = renderDragHandle(renderNode, false)
+
   return `<g
     class="node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
@@ -573,6 +640,7 @@ function renderFlatNode(node: Node, opts: Required<RenderOptions>, edges: Edge[]
     ${textSvg}
     ${portsSvg}
     ${collapseIconSvg}
+    ${dragHandleSvg}
   </g>`
 }
 
@@ -691,15 +759,23 @@ function renderIsoNode(node: Node, opts: Required<RenderOptions>, edges: Edge[])
   // Render collapse icon for subgraphs (use original node to check _collapsed state)
   const collapseIconSvg = renderCollapseIcon(nodeExt, isoProject, nodeX, nodeY, true)
 
+  // Render drag handle for edit mode (positioned in iso space)
+  const dragHandleSvg = renderDragHandle(renderNode, true)
+
+  // Use transform="translate(0, 0)" as a baseline for DOM manipulation during drag
+  // The actual positioning is done via the iso projection, but we need a transform
+  // attribute so the drag system can modify it in real-time
   return `<g
     class="node iso-node ${node.isSubgraph ? 'subgraph' : ''} ${isCollapsedSubgraph ? 'collapsed' : ''}"
     data-id="${node.id}"
+    transform="translate(0, 0)"
     opacity="${opacity}"
   >
     ${facesSvg}
     ${textSvg}
     ${portsSvg}
     ${collapseIconSvg}
+    ${dragHandleSvg}
   </g>`
 }
 
@@ -1209,12 +1285,10 @@ function renderPortCoords(
 }
 
 /**
- * Render draggable waypoint handles for an edge (for edit mode)
- * Renders small circles at each waypoint that can be dragged
- * - Orange circles: middle waypoints (drag to reposition)
- * - Green circles: endpoint handles (drag to change port connection)
+ * Render visual waypoint indicators for an edge (for edit mode)
+ * Shows orange circles at interior waypoints and red circles at port connection points
  */
-function renderWaypointHandles(
+function renderWaypointIndicators(
   edge: Edge,
   opts: Required<RenderOptions>,
   isIso: boolean = false
@@ -1224,58 +1298,117 @@ function renderWaypointHandles(
   }
 
   let svg = ''
-  const handleRadius = 6
-  const endpointRadius = 7
+  const waypointRadius = 5
+  const portRadius = 6
+  const cos30 = 0.866
+  const sin30 = 0.5
+
+  // Render port connection points (red circles at first and last points)
+  const firstPt = edge.points[0]
+  const lastPt = edge.points[edge.points.length - 1]
+
+  if (isIso) {
+    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+    // Source port connection (red)
+    svg += `<circle cx="${firstPt.x}" cy="${firstPt.y}" r="${portRadius}" fill="#ef4444" stroke="#dc2626" stroke-width="1.5" transform="${isoMatrix}" />`
+    // Target port connection (red)
+    svg += `<circle cx="${lastPt.x}" cy="${lastPt.y}" r="${portRadius}" fill="#ef4444" stroke="#dc2626" stroke-width="1.5" transform="${isoMatrix}" />`
+  } else {
+    // Source port connection (red)
+    svg += `<circle cx="${firstPt.x}" cy="${firstPt.y}" r="${portRadius}" fill="#ef4444" stroke="#dc2626" stroke-width="1.5" />`
+    // Target port connection (red)
+    svg += `<circle cx="${lastPt.x}" cy="${lastPt.y}" r="${portRadius}" fill="#ef4444" stroke="#dc2626" stroke-width="1.5" />`
+  }
+
+  // Render interior waypoints (orange circles)
+  for (let i = 1; i < edge.points.length - 1; i++) {
+    const pt = edge.points[i]
+    if (isIso) {
+      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
+      svg += `<circle cx="${pt.x}" cy="${pt.y}" r="${waypointRadius}" fill="#f97316" stroke="#ea580c" stroke-width="1.5" transform="${isoMatrix}" />`
+    } else {
+      svg += `<circle cx="${pt.x}" cy="${pt.y}" r="${waypointRadius}" fill="#f97316" stroke="#ea580c" stroke-width="1.5" />`
+    }
+  }
+
+  return svg
+}
+
+/**
+ * Render interactive segment hit areas for edge dragging (for edit mode)
+ * Creates invisible wide stroke paths for each segment with appropriate cursor styles:
+ * - ns-resize for horizontal segments (can only move vertically)
+ * - ew-resize for vertical segments (can only move horizontally)
+ */
+function renderSegmentHitAreas(
+  edge: Edge,
+  opts: Required<RenderOptions>,
+  isIso: boolean = false
+): string {
+  if (!opts.showWaypointHandles || !edge.points || edge.points.length < 2) {
+    return ''
+  }
+
+  let svg = ''
+  const hitAreaWidth = 16  // Wide invisible stroke for easier clicking
   const cos30 = 0.866
   const sin30 = 0.5
   const edgeId = `${edge.from}->${edge.to}`
 
-  // Render source endpoint handle (green - for changing port)
-  const sourcePt = edge.points[0]
-  if (isIso) {
-    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
-    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="source" transform="${isoMatrix}" style="cursor: pointer;">
-      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
-      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
-    </g>`
-  } else {
-    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="source" style="cursor: pointer;">
-      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
-      <circle cx="${sourcePt.x}" cy="${sourcePt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
-    </g>`
-  }
+  // Render hit area for each segment
+  for (let i = 0; i < edge.points.length - 1; i++) {
+    const p1 = edge.points[i]
+    const p2 = edge.points[i + 1]
 
-  // Render middle waypoint handles (orange - for repositioning)
-  for (let i = 1; i < edge.points.length - 1; i++) {
-    const pt = edge.points[i]
+    // Determine segment orientation
+    const dx = Math.abs(p2.x - p1.x)
+    const dy = Math.abs(p2.y - p1.y)
+    const isHorizontal = dx > dy
+
+    // Cursor depends on view mode and segment orientation
+    // Flat mode: ns-resize (↕) for horizontal, ew-resize (↔) for vertical
+    // Iso mode: diagonal cursors to match iso projection
+    let cursor: string
+    if (isIso) {
+      // In iso mode, perpendicular directions are diagonal on screen
+      // Horizontal segment perpendicular (graph Y) = down-left = nesw-resize
+      // Vertical segment perpendicular (graph X) = down-right = nwse-resize
+      cursor = isHorizontal ? 'nesw-resize' : 'nwse-resize'
+    } else {
+      cursor = isHorizontal ? 'ns-resize' : 'ew-resize'
+    }
 
     if (isIso) {
-      const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
-      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" transform="${isoMatrix}" style="cursor: move;">
-        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
-        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
-      </g>`
+      // Transform coordinates to iso space directly (instead of using transform attribute)
+      // This ensures the hit area stroke width isn't affected by the transform
+      const isoP1x = p1.x * cos30 - p1.y * cos30
+      const isoP1y = p1.x * sin30 + p1.y * sin30
+      const isoP2x = p2.x * cos30 - p2.y * cos30
+      const isoP2y = p2.x * sin30 + p2.y * sin30
+      svg += `<line
+        class="segment-hit-area"
+        data-edge-id="${edgeId}"
+        data-segment-index="${i}"
+        x1="${isoP1x}" y1="${isoP1y}"
+        x2="${isoP2x}" y2="${isoP2y}"
+        stroke="transparent"
+        stroke-width="${hitAreaWidth}"
+        pointer-events="stroke"
+        style="cursor: ${cursor};"
+      />`
     } else {
-      svg += `<g class="waypoint-handle" data-edge-id="${edgeId}" data-waypoint-index="${i}" style="cursor: move;">
-        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius}" fill="#f59e0b" stroke="#d97706" stroke-width="2" opacity="0.9"/>
-        <circle cx="${pt.x}" cy="${pt.y}" r="${handleRadius - 2}" fill="white" opacity="0.5"/>
-      </g>`
+      svg += `<line
+        class="segment-hit-area"
+        data-edge-id="${edgeId}"
+        data-segment-index="${i}"
+        x1="${p1.x}" y1="${p1.y}"
+        x2="${p2.x}" y2="${p2.y}"
+        stroke="transparent"
+        stroke-width="${hitAreaWidth}"
+        pointer-events="stroke"
+        style="cursor: ${cursor};"
+      />`
     }
-  }
-
-  // Render target endpoint handle (green - for changing port)
-  const targetPt = edge.points[edge.points.length - 1]
-  if (isIso) {
-    const isoMatrix = `matrix(${cos30}, ${sin30}, ${-cos30}, ${sin30}, 0, 0)`
-    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="target" transform="${isoMatrix}" style="cursor: pointer;">
-      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
-      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
-    </g>`
-  } else {
-    svg += `<g class="endpoint-handle" data-edge-id="${edgeId}" data-endpoint="target" style="cursor: pointer;">
-      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius}" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9"/>
-      <circle cx="${targetPt.x}" cy="${targetPt.y}" r="${endpointRadius - 3}" fill="white" opacity="0.6"/>
-    </g>`
   }
 
   return svg
@@ -1428,13 +1561,19 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? graph.edges.map(e => renderPortCoords(e, opts, false)).join('\n')
     : ''
 
-  // Generate waypoint handles if in edit mode
-  const waypointHandlesSvg = opts.showWaypointHandles
-    ? graph.edges.map(e => renderWaypointHandles(e, opts, false)).join('\n')
+  // Generate segment hit areas and waypoint indicators if in edit mode
+  const segmentHitAreasSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderSegmentHitAreas(e, opts, false)).join('\n')
+    : ''
+  const waypointIndicatorsSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderWaypointIndicators(e, opts, false)).join('\n')
     : ''
 
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
+
+  // Include edit mode styles if in edit mode
+  const editModeStyles = opts.showWaypointHandles ? getEditModeStyles() : ''
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -1443,8 +1582,10 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
     viewBox="0 0 ${width} ${height}"
     class="isomaid-diagram"
     data-view-mode="flat"
+    data-edit-mode="${opts.showWaypointHandles}"
   >
     <defs>
+      ${editModeStyles}
       <marker
         id="arrowhead"
         markerWidth="10"
@@ -1466,7 +1607,8 @@ function renderFlatSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="nodes">${nodesSvg}</g>
       <g class="edge-coords">${edgeCoordsSvg}</g>
       <g class="port-coords">${portCoordsSvg}</g>
-      <g class="waypoint-handles">${waypointHandlesSvg}</g>
+      <g class="segment-hit-areas">${segmentHitAreasSvg}</g>
+      <g class="waypoint-indicators">${waypointIndicatorsSvg}</g>
     </g>
   </svg>`
 }
@@ -1543,13 +1685,19 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     ? graph.edges.map(e => renderPortCoords(e, opts, true)).join('\n')
     : ''
 
-  // Generate waypoint handles if in edit mode
-  const waypointHandlesSvg = opts.showWaypointHandles
-    ? graph.edges.map(e => renderWaypointHandles(e, opts, true)).join('\n')
+  // Generate segment hit areas and waypoint indicators if in edit mode
+  const segmentHitAreasSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderSegmentHitAreas(e, opts, true)).join('\n')
+    : ''
+  const waypointIndicatorsSvg = opts.showWaypointHandles
+    ? graph.edges.map(e => renderWaypointIndicators(e, opts, true)).join('\n')
     : ''
 
   // Include geofence pattern in defs if geofences are shown
   const geofencePatternDef = opts.showGeofences ? getGeofencePatternDef() : ''
+
+  // Include edit mode styles if in edit mode
+  const editModeStyles = opts.showWaypointHandles ? getEditModeStyles() : ''
 
   return `<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -1558,8 +1706,10 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
     viewBox="0 0 ${width} ${height}"
     class="isomaid-diagram isomaid-iso"
     data-view-mode="iso"
+    data-edit-mode="${opts.showWaypointHandles}"
   >
     <defs>
+      ${editModeStyles}
       ${geofencePatternDef}
     </defs>
     <g transform="translate(${offsetX}, ${offsetY})">
@@ -1571,7 +1721,8 @@ function renderIsoSvg(graph: Graph, opts: Required<RenderOptions>): string {
       <g class="nodes">${nodesSvg}</g>
       <g class="edge-coords">${edgeCoordsSvg}</g>
       <g class="port-coords">${portCoordsSvg}</g>
-      <g class="waypoint-handles">${waypointHandlesSvg}</g>
+      <g class="segment-hit-areas">${segmentHitAreasSvg}</g>
+      <g class="waypoint-indicators">${waypointIndicatorsSvg}</g>
     </g>
   </svg>`
 }

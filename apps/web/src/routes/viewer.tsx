@@ -18,7 +18,7 @@ import type {
   DragState,
 } from 'isomaid'
 import { createEmptyEditingState } from 'isomaid'
-import { screenToGraph } from '../utils/coords'
+import { screenToGraph, findNearestSegment, constrainToPerpendicular, closestPointOnSegment } from '../utils/coords'
 
 export const Route = createFileRoute('/viewer')({ component: DiagramViewer })
 
@@ -133,6 +133,18 @@ function DiagramViewer() {
   const [editingState, setEditingState] = useState<EditingState>(createEmptyEditingState)
   // Active drag operation
   const [dragState, setDragState] = useState<DragState | null>(null)
+  // Ref to access current dragState in stable callbacks
+  const dragStateRef = useRef<DragState | null>(null)
+  dragStateRef.current = dragState
+  // Ref to track dragged DOM element for direct manipulation (performance optimization)
+  const draggedElementRef = useRef<SVGElement | null>(null)
+  // Ref to store original transform of dragged element
+  const originalTransformRef = useRef<string | null>(null)
+  // Ref to track accumulated drag delta in screen space (for smooth animation)
+  const dragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 })
+  // Refs to store handlers for immediate attachment (avoids dependency ordering issues)
+  const handleEditMouseMoveRef = useRef<((e: MouseEvent) => void) | null>(null)
+  const handleEditMouseUpRef = useRef<((e: MouseEvent) => void) | null>(null)
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(ZOOM_STORAGE_KEY)
@@ -148,6 +160,8 @@ function DiagramViewer() {
   const [panX, setPanX] = useState<number>(0)
   const [panY, setPanY] = useState<number>(0)
   const diagramContainerRef = useRef<HTMLDivElement>(null)
+  // Ref to hold the SVG container - prevents React from replacing it during re-renders
+  const svgContainerRef = useRef<HTMLDivElement>(null)
   // Pending error - silently captured, shown only on demand
   const [pendingError, setPendingError] = useState<string | null>(null)
   // Visible error - shown when user clicks Check
@@ -155,6 +169,12 @@ function DiagramViewer() {
   // Collision test results
   const [collisionResult, setCollisionResult] = useState<CollisionTestResult | null>(null)
   const [showCollisions, setShowCollisions] = useState(false)
+  // DEBUG: Visual click counter to verify events are firing
+  const [debugClickCount, setDebugClickCount] = useState(0)
+  // DEBUG: Mouse position
+  const [debugMousePos, setDebugMousePos] = useState({ x: 0, y: 0 })
+  // DEBUG: Mouse down state
+  const [debugMouseDown, setDebugMouseDown] = useState(false)
   // Clicked coordinate display
   const [clickedCoord, setClickedCoord] = useState<{ x: number; y: number; screenX: number; screenY: number } | null>(null)
   const [loading, setLoading] = useState(true)
@@ -653,56 +673,32 @@ function DiagramViewer() {
 
   // Handle mousedown for starting drag in edit mode
   const handleEditMouseDown = useCallback((e: React.MouseEvent) => {
+    console.log('[DRAG] handleEditMouseDown called', { interactionMode, hasGraph: !!graph })
+
     if (interactionMode !== 'edit' || !graph) return
 
     const target = e.target as SVGElement
+    console.log('[DRAG] Target element:', target.tagName, target.className, target.getAttribute('data-id'))
 
     // Walk up DOM to find a draggable element
     let element: SVGElement | null = target
+    let clickedDragHandle = false
+    let dragHandleNodeId: string | null = null
+
     while (element && element.tagName !== 'svg') {
+      console.log('[DRAG] Walking up:', element.tagName, element.className)
+
       // Skip if clicking on collapse icon
       if (element.classList?.contains('collapse-icon')) {
+        console.log('[DRAG] Skipping - collapse icon')
         return
       }
 
-      // Check for endpoint handle (green - for changing port connection)
-      if (element.classList?.contains('endpoint-handle') && element.hasAttribute('data-edge-id')) {
-        const edgeId = element.getAttribute('data-edge-id')!
-        const endpointType = element.getAttribute('data-endpoint') as 'source' | 'target'
-
-        // Start endpoint drag
-        setDragState({
-          type: 'endpoint',
-          targetId: edgeId,
-          endpointType,
-          startX: e.clientX,
-          startY: e.clientY,
-          currentX: e.clientX,
-          currentY: e.clientY,
-        })
-        e.preventDefault()
-        e.stopPropagation()
-        return
-      }
-
-      // Check for waypoint handle (orange - for repositioning)
-      if (element.classList?.contains('waypoint-handle') && element.hasAttribute('data-edge-id')) {
-        const edgeId = element.getAttribute('data-edge-id')!
-        const waypointIndex = parseInt(element.getAttribute('data-waypoint-index') || '0', 10)
-
-        // Start waypoint drag
-        setDragState({
-          type: 'waypoint',
-          targetId: edgeId,
-          waypointIndex,
-          startX: e.clientX,
-          startY: e.clientY,
-          currentX: e.clientX,
-          currentY: e.clientY,
-        })
-        e.preventDefault()
-        e.stopPropagation()
-        return
+      // Check if clicking on drag handle (for subgraphs)
+      if (element.classList?.contains('drag-handle') && element.hasAttribute('data-node-id')) {
+        clickedDragHandle = true
+        dragHandleNodeId = element.getAttribute('data-node-id')
+        console.log('[DRAG] Found drag handle for:', dragHandleNodeId)
       }
 
       // Check for node
@@ -711,10 +707,56 @@ function DiagramViewer() {
         const node = graph.nodes.get(nodeId)
 
         if (node) {
-          // Start node drag
+          // For subgraphs, only allow drag if clicking on drag handle
+          if (node.isSubgraph && !clickedDragHandle) {
+            // Don't start drag - subgraphs require drag handle
+            break
+          }
+
+          // For subgraphs via drag handle, use the handle's node ID
+          const targetNodeId = clickedDragHandle && dragHandleNodeId ? dragHandleNodeId : nodeId
+
+          // Find and store the actual SVG element for direct DOM manipulation
+          const container = diagramContainerRef.current
+          const nodeElement = container?.querySelector(`[data-id="${targetNodeId}"]`) as SVGElement | null
+
+          console.log('[DRAG] mousedown:', {
+            targetNodeId,
+            foundElement: !!nodeElement,
+            transform: nodeElement?.getAttribute('transform'),
+            hasHandlers: !!(handleEditMouseMoveRef.current && handleEditMouseUpRef.current)
+          })
+
+          if (nodeElement) {
+            draggedElementRef.current = nodeElement
+            originalTransformRef.current = nodeElement.getAttribute('transform') || ''
+            dragDeltaRef.current = { dx: 0, dy: 0 }
+
+            // Store drag start info in ref immediately (before state update)
+            dragStateRef.current = {
+              type: 'node',
+              targetId: targetNodeId,
+              startX: e.clientX,
+              startY: e.clientY,
+              currentX: e.clientX,
+              currentY: e.clientY,
+            }
+
+            // Attach listeners IMMEDIATELY (not via useEffect) for instant response
+            // Use refs to access handlers (they're defined later in the code)
+            if (handleEditMouseMoveRef.current && handleEditMouseUpRef.current) {
+              document.addEventListener('mousemove', handleEditMouseMoveRef.current)
+              document.addEventListener('mouseup', handleEditMouseUpRef.current)
+              console.log('[DRAG] Listeners attached immediately')
+            } else {
+              console.log('[DRAG] WARNING: Handlers not available in refs!')
+            }
+          }
+
+          // Start node drag (also set state for cleanup effect)
           setDragState({
             type: 'node',
-            targetId: nodeId,
+            targetId: targetNodeId,
             startX: e.clientX,
             startY: e.clientY,
             currentX: e.clientX,
@@ -728,22 +770,221 @@ function DiagramViewer() {
 
       element = element.parentElement as SVGElement | null
     }
-  }, [interactionMode, graph])
 
-  // Handle mouse move during drag
+    // If no handle or node was clicked, check if clicking near an edge segment
+    const container = diagramContainerRef.current
+    const svgElement = container?.querySelector('svg') as SVGSVGElement | null
+    const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
+
+    if (svgElement && transformGroup) {
+      try {
+        // Get click position in graph coordinates
+        const graphPoint = screenToGraph(
+          e.clientX,
+          e.clientY,
+          svgElement,
+          transformGroup,
+          viewMode
+        )
+
+        // Prepare edges for hit testing (with IDs)
+        const edgesWithIds = graph.edges.map(edge => ({
+          id: `${edge.from}->${edge.to}`,
+          points: edge.points
+        }))
+
+        // Find nearest segment
+        const hit = findNearestSegment(graphPoint.x, graphPoint.y, edgesWithIds, 20)
+
+        if (hit && hit.orientation !== 'point') {
+          // Start segment drag
+          setDragState({
+            type: 'segment',
+            targetId: hit.edgeId,
+            segmentIndex: hit.segmentIndex,
+            segmentOrientation: hit.orientation,
+            startX: e.clientX,
+            startY: e.clientY,
+            currentX: e.clientX,
+            currentY: e.clientY,
+          })
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      } catch {
+        // Silently fail if transform not available
+      }
+    }
+  }, [interactionMode, graph, viewMode])
+
+  // Handle double-click to add waypoints on edge segments
+  const handleEditDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (interactionMode !== 'edit' || !graph) return
+
+    const container = diagramContainerRef.current
+    const svgElement = container?.querySelector('svg') as SVGSVGElement | null
+    const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
+
+    if (!svgElement || !transformGroup) return
+
+    try {
+      // Get click position in graph coordinates
+      const graphPoint = screenToGraph(
+        e.clientX,
+        e.clientY,
+        svgElement,
+        transformGroup,
+        viewMode
+      )
+
+      // Prepare edges for hit testing
+      const edgesWithIds = graph.edges.map(edge => ({
+        id: `${edge.from}->${edge.to}`,
+        points: edge.points
+      }))
+
+      // Find nearest segment (use a slightly larger threshold for double-click)
+      const hit = findNearestSegment(graphPoint.x, graphPoint.y, edgesWithIds, 25)
+
+      if (hit) {
+        const edgeId = hit.edgeId
+        const segmentIndex = hit.segmentIndex
+        const edge = graph.edges.find(e => `${e.from}->${e.to}` === edgeId)
+
+        if (edge?.points && edge.points.length > segmentIndex + 1) {
+          const p1 = edge.points[segmentIndex]
+          const p2 = edge.points[segmentIndex + 1]
+
+          // Find the closest point on the segment to insert the waypoint
+          const insertPoint = closestPointOnSegment(
+            graphPoint.x, graphPoint.y,
+            p1.x, p1.y, p2.x, p2.y
+          )
+
+          // Add the new waypoint to editing state
+          setEditingState(prev => {
+            const newOverrides = new Map(prev.edgeOverrides)
+            const existing = newOverrides.get(edgeId)
+            const existingWaypoints = existing?.waypoints || []
+
+            // The new waypoint index will be segmentIndex + 1 (inserted between segment endpoints)
+            // We need to shift all existing waypoints with index > segmentIndex up by 1
+            const shiftedWaypoints = existingWaypoints.map(wp => ({
+              ...wp,
+              index: wp.index > segmentIndex ? wp.index + 1 : wp.index
+            }))
+
+            // Add the new waypoint
+            const newWaypoints = [
+              ...shiftedWaypoints,
+              { index: segmentIndex + 1, x: insertPoint.x, y: insertPoint.y, isCustom: true }
+            ]
+
+            newOverrides.set(edgeId, {
+              edgeId,
+              waypoints: newWaypoints,
+              sourcePortOverride: existing?.sourcePortOverride,
+              targetPortOverride: existing?.targetPortOverride,
+            })
+
+            return {
+              ...prev,
+              edgeOverrides: newOverrides,
+            }
+          })
+
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }
+    } catch {
+      // Silently fail if transform not available
+    }
+  }, [interactionMode, graph, viewMode])
+
+  // Handle mouse move during drag - uses direct DOM manipulation for smooth 60fps movement
   const handleEditMouseMove = useCallback((e: MouseEvent) => {
-    if (!dragState) return
+    const currentDrag = dragStateRef.current
+    if (!currentDrag) {
+      console.log('[DRAG] mousemove: no currentDrag')
+      return
+    }
 
+    // Calculate screen delta
+    const screenDx = e.clientX - currentDrag.startX
+    const screenDy = e.clientY - currentDrag.startY
+
+    console.log('[DRAG] mousemove:', {
+      type: currentDrag.type,
+      screenDx,
+      screenDy,
+      hasElement: !!draggedElementRef.current,
+      originalTransform: originalTransformRef.current
+    })
+
+    // For node drags, directly manipulate the DOM transform (bypass React for performance)
+    if (currentDrag.type === 'node' && draggedElementRef.current && originalTransformRef.current !== null) {
+      // Scale delta by zoom level to get movement in canvas coordinates
+      const canvasDx = screenDx / zoom
+      const canvasDy = screenDy / zoom
+
+      // For drag preview: use screen/canvas deltas directly for DOM manipulation.
+      // In iso mode, node's transform is translate(0,0) with internal shapes at screen coords.
+      // In flat mode, graph coords = screen coords.
+      const svgDx = canvasDx
+      const svgDy = canvasDy
+
+      // For mouseup commit: convert to graph deltas (what renderCurrentView expects).
+      // The editing state adds deltas to graph coordinates, which then get projected.
+      // In flat mode: graph = screen, no conversion needed.
+      // In iso mode: need inverse transform to convert screen delta to graph delta.
+      let graphDx = canvasDx
+      let graphDy = canvasDy
+      if (viewMode === 'iso') {
+        // Inverse of iso matrix: matrix(0.866, 0.5, -0.866, 0.5, 0, 0)
+        // screenX = 0.866*gx - 0.866*gy  =>  gx - gy = screenX / 0.866
+        // screenY = 0.5*gx + 0.5*gy      =>  gx + gy = screenY / 0.5 = 2*screenY
+        // Solving: gx = screenY + screenX/1.732, gy = screenY - screenX/1.732
+        const k = 1 / 1.732
+        graphDx = canvasDy + k * canvasDx
+        graphDy = canvasDy - k * canvasDx
+      }
+
+      // Store the graph delta for mouseup commit
+      dragDeltaRef.current = { dx: graphDx, dy: graphDy }
+
+      // Parse original transform to get base position
+      const match = originalTransformRef.current.match(/translate\(([^,]+),\s*([^)]+)\)/)
+      if (match) {
+        const baseX = parseFloat(match[1])
+        const baseY = parseFloat(match[2])
+        const newTransform = `translate(${baseX + svgDx}, ${baseY + svgDy})`
+        console.log('[DRAG] Updating DOM transform:', { baseX, baseY, svgDx, svgDy, newTransform })
+        // Apply new transform directly to DOM (GPU accelerated, no React re-render)
+        draggedElementRef.current.setAttribute('transform', newTransform)
+      } else {
+        console.log('[DRAG] Regex did not match:', originalTransformRef.current)
+      }
+      return
+    }
+
+    // For segment drags, we still need state updates (more complex path manipulation)
     setDragState(prev => prev ? {
       ...prev,
       currentX: e.clientX,
       currentY: e.clientY,
     } : null)
-  }, [dragState])
+  }, [zoom, viewMode]) // Depends on zoom and viewMode for coordinate conversion
 
   // Handle mouse up to complete drag
   const handleEditMouseUp = useCallback((_e: MouseEvent) => {
-    if (!dragState || !graph) {
+    const currentDragState = dragStateRef.current
+    if (!currentDragState || !graph) {
+      // Clean up refs
+      draggedElementRef.current = null
+      originalTransformRef.current = null
+      dragDeltaRef.current = { dx: 0, dy: 0 }
       setDragState(null)
       return
     }
@@ -753,22 +994,69 @@ function DiagramViewer() {
     const transformGroup = svgElement?.querySelector('g[transform]') as SVGGraphicsElement | null
 
     if (!svgElement || !transformGroup) {
+      // Clean up refs
+      draggedElementRef.current = null
+      originalTransformRef.current = null
+      dragDeltaRef.current = { dx: 0, dy: 0 }
       setDragState(null)
       return
     }
 
     try {
-      // Calculate delta in graph coordinates
+      // For node drags, use the accumulated delta from direct DOM manipulation
+      if (currentDragState.type === 'node') {
+        // Remove listeners that were added immediately in mousedown (use refs)
+        if (handleEditMouseMoveRef.current) {
+          document.removeEventListener('mousemove', handleEditMouseMoveRef.current)
+        }
+        if (handleEditMouseUpRef.current) {
+          document.removeEventListener('mouseup', handleEditMouseUpRef.current)
+        }
+
+        if (draggedElementRef.current) {
+          const dx = dragDeltaRef.current.dx
+          const dy = dragDeltaRef.current.dy
+
+          // Only apply if there's meaningful movement
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+            // Apply node position override
+            setEditingState(prev => {
+              const newOverrides = new Map(prev.nodeOverrides)
+              const existing = newOverrides.get(currentDragState.targetId)
+
+              newOverrides.set(currentDragState.targetId, {
+                nodeId: currentDragState.targetId,
+                dx: (existing?.dx || 0) + dx,
+                dy: (existing?.dy || 0) + dy,
+              })
+
+              return {
+                ...prev,
+                nodeOverrides: newOverrides,
+              }
+            })
+          }
+        }
+
+        // Clean up refs
+        draggedElementRef.current = null
+        originalTransformRef.current = null
+        dragDeltaRef.current = { dx: 0, dy: 0 }
+        setDragState(null)
+        return
+      }
+
+      // For segment drags, use the existing coordinate transformation approach
       const startGraph = screenToGraph(
-        dragState.startX,
-        dragState.startY,
+        currentDragState.startX,
+        currentDragState.startY,
         svgElement,
         transformGroup,
         viewMode
       )
       const endGraph = screenToGraph(
-        dragState.currentX,
-        dragState.currentY,
+        currentDragState.currentX,
+        currentDragState.currentY,
         svgElement,
         transformGroup,
         viewMode
@@ -779,64 +1067,144 @@ function DiagramViewer() {
 
       // Only apply if there's meaningful movement
       if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-        if (dragState.type === 'node') {
-          // Apply node position override
-          setEditingState(prev => {
-            const newOverrides = new Map(prev.nodeOverrides)
-            const existing = newOverrides.get(dragState.targetId)
+        if (currentDragState.type === 'segment' && currentDragState.segmentIndex !== undefined && currentDragState.segmentOrientation) {
+        // Segment drag: FigJam-style behavior
+        // - Middle segments: move both endpoints perpendicularly
+        // - First segment (connected to source): keep port fixed, add new segment
+        // - Last segment (connected to target): keep port fixed, add new segment
+        const edgeId = currentDragState.targetId
+        const segmentIndex = currentDragState.segmentIndex
+        const orientation = currentDragState.segmentOrientation
 
-            newOverrides.set(dragState.targetId, {
-              nodeId: dragState.targetId,
-              dx: (existing?.dx || 0) + dx,
-              dy: (existing?.dy || 0) + dy,
-            })
+        // Constrain movement to perpendicular direction
+        const constrained = constrainToPerpendicular(dx, dy, orientation)
 
-            return {
-              ...prev,
-              nodeOverrides: newOverrides,
-            }
-          })
-        } else if (dragState.type === 'waypoint' && dragState.waypointIndex !== undefined) {
-          // Apply waypoint position override
-          const edgeId = dragState.targetId
-          const waypointIndex = dragState.waypointIndex
-
-          // Find the edge to get the original waypoint position
+        // Only apply if there's meaningful movement in the constrained direction
+        if (Math.abs(constrained.dx) > 1 || Math.abs(constrained.dy) > 1) {
+          // Find the edge to get original waypoint positions
           const edge = graph.edges.find(e => `${e.from}->${e.to}` === edgeId)
-          if (edge?.points && edge.points[waypointIndex]) {
-            const originalPoint = edge.points[waypointIndex]
+          if (edge?.points && edge.points.length > segmentIndex + 1) {
+            const startPoint = edge.points[segmentIndex]
+            const endPoint = edge.points[segmentIndex + 1]
+            const pointsLength = edge.points.length
+            const lastPointIdx = pointsLength - 1
+            const isFirstSegment = segmentIndex === 0
+            const isLastSegment = segmentIndex + 1 === lastPointIdx
 
             setEditingState(prev => {
               const newOverrides = new Map(prev.edgeOverrides)
               const existing = newOverrides.get(edgeId)
-
-              // Get existing waypoints or create new array
               const existingWaypoints = existing?.waypoints || []
+              let newWaypoints = [...existingWaypoints]
 
-              // Find if we already have an override for this waypoint
-              const existingWaypointIdx = existingWaypoints.findIndex(w => w.index === waypointIndex)
-
-              let newWaypoints
-              if (existingWaypointIdx >= 0) {
-                // Update existing waypoint override
-                newWaypoints = [...existingWaypoints]
-                newWaypoints[existingWaypointIdx] = {
-                  index: waypointIndex,
-                  x: existingWaypoints[existingWaypointIdx].x + dx,
-                  y: existingWaypoints[existingWaypointIdx].y + dy,
+              // Helper to update or add a waypoint override
+              const updateWaypoint = (index: number, originalPt: { x: number; y: number }, applyDelta: boolean) => {
+                const existingIdx = newWaypoints.findIndex(w => w.index === index)
+                if (existingIdx >= 0) {
+                  if (applyDelta) {
+                    if (orientation === 'horizontal') {
+                      newWaypoints[existingIdx] = {
+                        ...newWaypoints[existingIdx],
+                        y: newWaypoints[existingIdx].y + constrained.dy,
+                      }
+                    } else {
+                      newWaypoints[existingIdx] = {
+                        ...newWaypoints[existingIdx],
+                        x: newWaypoints[existingIdx].x + constrained.dx,
+                      }
+                    }
+                  }
+                } else {
+                  if (applyDelta) {
+                    if (orientation === 'horizontal') {
+                      newWaypoints.push({
+                        index,
+                        x: originalPt.x,
+                        y: originalPt.y + constrained.dy,
+                      })
+                    } else {
+                      newWaypoints.push({
+                        index,
+                        x: originalPt.x + constrained.dx,
+                        y: originalPt.y,
+                      })
+                    }
+                  }
                 }
+              }
+
+              if (isFirstSegment && !isLastSegment) {
+                // First segment: keep port (point 0) fixed, move point 1
+                // Add a corner waypoint to maintain orthogonality
+                updateWaypoint(1, endPoint, true)
+
+                // Add a corner at the port's extension point (perpendicular to movement)
+                // Corner is at: (port.x, newPoint1.y) for horizontal drag, (newPoint1.x, port.y) for vertical
+                const wp1 = newWaypoints.find(w => w.index === 1)
+                const newPoint1Y = wp1 ? wp1.y : endPoint.y + constrained.dy
+                const newPoint1X = wp1 ? wp1.x : endPoint.x + constrained.dx
+
+                if (orientation === 'horizontal') {
+                  // Horizontal segment being moved vertically
+                  // Add corner at (startPoint.x, newPoint1Y)
+                  const cornerIdx = newWaypoints.findIndex(w => w.index === 0)
+                  if (cornerIdx >= 0) {
+                    newWaypoints[cornerIdx] = { index: 0, x: startPoint.x, y: newPoint1Y }
+                  } else {
+                    newWaypoints.push({ index: 0, x: startPoint.x, y: newPoint1Y })
+                  }
+                } else {
+                  // Vertical segment being moved horizontally
+                  // Add corner at (newPoint1X, startPoint.y)
+                  const cornerIdx = newWaypoints.findIndex(w => w.index === 0)
+                  if (cornerIdx >= 0) {
+                    newWaypoints[cornerIdx] = { index: 0, x: newPoint1X, y: startPoint.y }
+                  } else {
+                    newWaypoints.push({ index: 0, x: newPoint1X, y: startPoint.y })
+                  }
+                }
+              } else if (isLastSegment && !isFirstSegment) {
+                // Last segment: keep port (last point) fixed, move second-to-last
+                updateWaypoint(segmentIndex, startPoint, true)
+
+                // Add a corner at the port's extension point
+                const wpPrev = newWaypoints.find(w => w.index === segmentIndex)
+                const newPointY = wpPrev ? wpPrev.y : startPoint.y + constrained.dy
+                const newPointX = wpPrev ? wpPrev.x : startPoint.x + constrained.dx
+
+                if (orientation === 'horizontal') {
+                  // Add corner at (endPoint.x, newPointY)
+                  const cornerIdx = newWaypoints.findIndex(w => w.index === lastPointIdx)
+                  if (cornerIdx >= 0) {
+                    newWaypoints[cornerIdx] = { index: lastPointIdx, x: endPoint.x, y: newPointY }
+                  } else {
+                    newWaypoints.push({ index: lastPointIdx, x: endPoint.x, y: newPointY })
+                  }
+                } else {
+                  // Add corner at (newPointX, endPoint.y)
+                  const cornerIdx = newWaypoints.findIndex(w => w.index === lastPointIdx)
+                  if (cornerIdx >= 0) {
+                    newWaypoints[cornerIdx] = { index: lastPointIdx, x: newPointX, y: endPoint.y }
+                  } else {
+                    newWaypoints.push({ index: lastPointIdx, x: newPointX, y: endPoint.y })
+                  }
+                }
+              } else if (isFirstSegment && isLastSegment) {
+                // Edge with only 2 points (single segment connecting both ports)
+                // Move both endpoints but keep ports conceptually fixed
+                updateWaypoint(0, startPoint, true)
+                updateWaypoint(1, endPoint, true)
               } else {
-                // Add new waypoint override
-                newWaypoints = [...existingWaypoints, {
-                  index: waypointIndex,
-                  x: originalPoint.x + dx,
-                  y: originalPoint.y + dy,
-                }]
+                // Middle segment: just move both endpoints
+                updateWaypoint(segmentIndex, startPoint, true)
+                updateWaypoint(segmentIndex + 1, endPoint, true)
               }
 
               newOverrides.set(edgeId, {
                 edgeId,
                 waypoints: newWaypoints,
+                sourcePortOverride: existing?.sourcePortOverride,
+                targetPortOverride: existing?.targetPortOverride,
               })
 
               return {
@@ -845,74 +1213,78 @@ function DiagramViewer() {
               }
             })
           }
-        } else if (dragState.type === 'endpoint' && dragState.endpointType) {
-          // Apply endpoint port override - find nearest port on the connected node
-          const edgeId = dragState.targetId
-          const endpointType = dragState.endpointType
-
-          // Find the edge
-          const edge = graph.edges.find(e => `${e.from}->${e.to}` === edgeId)
-          if (edge) {
-            // Get the node we're connecting to
-            const nodeId = endpointType === 'source' ? edge.from : edge.to
-            const node = graph.nodes.get(nodeId)
-
-            if (node?.ports && node.ports.length > 0) {
-              // Find the nearest port to the drop position
-              let nearestPortIndex = 0
-              let nearestDistance = Infinity
-
-              for (let i = 0; i < node.ports.length; i++) {
-                const port = node.ports[i]
-                if (port.cornerX !== undefined && port.cornerY !== undefined) {
-                  const dist = Math.hypot(
-                    endGraph.x - port.cornerX,
-                    endGraph.y - port.cornerY
-                  )
-                  if (dist < nearestDistance) {
-                    nearestDistance = dist
-                    nearestPortIndex = i
-                  }
-                }
-              }
-
-              // Store the port override
-              setEditingState(prev => {
-                const newOverrides = new Map(prev.edgeOverrides)
-                const existing = newOverrides.get(edgeId)
-
-                const newOverride = {
-                  edgeId,
-                  waypoints: existing?.waypoints || [],
-                  sourcePortOverride: endpointType === 'source'
-                    ? { portIndex: nearestPortIndex }
-                    : existing?.sourcePortOverride,
-                  targetPortOverride: endpointType === 'target'
-                    ? { portIndex: nearestPortIndex }
-                    : existing?.targetPortOverride,
-                }
-
-                newOverrides.set(edgeId, newOverride)
-
-                return {
-                  ...prev,
-                  edgeOverrides: newOverrides,
-                }
-              })
-            }
-          }
+        }
         }
       }
     } catch {
       // Silently fail if transform not available
     }
 
+    // Always clean up refs
+    draggedElementRef.current = null
+    originalTransformRef.current = null
+    dragDeltaRef.current = { dx: 0, dy: 0 }
     setDragState(null)
-  }, [dragState, graph, viewMode])
+  }, [graph, viewMode]) // Uses dragStateRef for stability
 
-  // Attach mouse move/up listeners when dragging
+  // Store handlers in refs for immediate access in mousedown (before useEffect runs)
+  handleEditMouseMoveRef.current = handleEditMouseMove
+  handleEditMouseUpRef.current = handleEditMouseUp
+
+  // DEBUG: Log on mount to verify code is running
   useEffect(() => {
-    if (dragState) {
+    console.log('=== VIEWER COMPONENT MOUNTED - DEBUG CODE ACTIVE ===')
+  }, [])
+
+  // Update SVG container only when svg state changes (not during drag re-renders)
+  // This prevents React from wiping out our direct DOM manipulations
+  useEffect(() => {
+    if (svgContainerRef.current && svg) {
+      svgContainerRef.current.innerHTML = svg
+    }
+  }, [svg])
+
+  // DEBUG: Global mousemove listener to track position
+  // Skip updates while dragging to avoid React re-renders that would reset DOM transforms
+  useEffect(() => {
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      // Don't update state while dragging - it causes re-render which resets our DOM manipulation
+      if (!dragStateRef.current) {
+        setDebugMousePos({ x: e.clientX, y: e.clientY })
+      }
+    }
+    document.addEventListener('mousemove', handleGlobalMouseMove)
+    return () => document.removeEventListener('mousemove', handleGlobalMouseMove)
+  }, [])
+
+  // DEBUG: Global mousedown/mouseup listener to see if events are firing at all
+  useEffect(() => {
+    const handleGlobalMouseDown = (e: MouseEvent) => {
+      console.log('[GLOBAL] mousedown:', {
+        target: (e.target as HTMLElement)?.tagName,
+        className: (e.target as HTMLElement)?.className,
+        interactionMode,
+      })
+      setDebugClickCount(c => c + 1)
+      setDebugMouseDown(true)
+      console.log('[DEBUG] setDebugMouseDown(true) called')
+    }
+    const handleGlobalMouseUp = () => {
+      setDebugMouseDown(false)
+      console.log('[DEBUG] setDebugMouseDown(false) called')
+    }
+    document.addEventListener('mousedown', handleGlobalMouseDown)
+    document.addEventListener('mouseup', handleGlobalMouseUp)
+    return () => {
+      document.removeEventListener('mousedown', handleGlobalMouseDown)
+      document.removeEventListener('mouseup', handleGlobalMouseUp)
+    }
+  }, [interactionMode])
+
+  // Attach mouse move/up listeners when dragging (for segment drags only)
+  // Node drags attach listeners immediately in mousedown for instant response
+  useEffect(() => {
+    if (dragState && dragState.type === 'segment') {
       document.addEventListener('mousemove', handleEditMouseMove)
       document.addEventListener('mouseup', handleEditMouseUp)
       return () => {
@@ -920,6 +1292,8 @@ function DiagramViewer() {
         document.removeEventListener('mouseup', handleEditMouseUp)
       }
     }
+    // Only re-run when dragState changes (to add/remove listeners)
+    // Callbacks are stable due to using ref
   }, [dragState, handleEditMouseMove, handleEditMouseUp])
 
   useEffect(() => {
@@ -974,6 +1348,11 @@ function DiagramViewer() {
     setSource(DEFAULT_DIAGRAM)
     setPendingError(null)
     setVisibleError(null)
+  }, [])
+
+  // Reset editing overrides to auto-generated layout
+  const handleResetLayout = useCallback(() => {
+    setEditingState(createEmptyEditingState())
   }, [])
 
   // Zoom handlers
@@ -1070,7 +1449,7 @@ function DiagramViewer() {
       style={{ overscrollBehavior: 'none' }}
     >
       {/* Toolbar */}
-      <div className="flex-shrink-0 bg-slate-800 border-b border-slate-700 px-6 py-3">
+      <div className="shrink-0 bg-slate-800 border-b border-slate-700 px-6 py-3">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold">
             <span className="text-cyan-400">isomaid</span> Diagram Editor
@@ -1168,6 +1547,20 @@ function DiagramViewer() {
               </button>
             </div>
 
+            {/* Reset Layout Button - shown when there are editing overrides */}
+            {(editingState.nodeOverrides.size > 0 || editingState.edgeOverrides.size > 0) && (
+              <button
+                onClick={handleResetLayout}
+                className="px-3 py-1.5 text-sm text-orange-400 hover:text-orange-300 hover:bg-orange-900/30 rounded-md transition-colors flex items-center gap-1.5"
+                title="Reset all position changes to auto-generated layout"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Reset Layout
+              </button>
+            )}
+
             {/* View Mode Toggle */}
             <div className="flex items-center gap-2 bg-slate-700 rounded-lg p-1">
               <button
@@ -1207,7 +1600,7 @@ function DiagramViewer() {
           style={{ width: `${splitPosition}%` }}
         >
           {/* Editor Header */}
-          <div className="flex-shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
+          <div className="shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
             <span>Mermaid Source</span>
             {/* Status indicator */}
             <span className="flex items-center gap-1.5">
@@ -1240,7 +1633,7 @@ function DiagramViewer() {
         {/* Resize Handle */}
         <div
           onMouseDown={handleMouseDown}
-          className="w-1 bg-slate-700 hover:bg-cyan-500 cursor-col-resize transition-colors flex-shrink-0"
+          className="w-1 bg-slate-700 hover:bg-cyan-500 cursor-col-resize transition-colors shrink-0"
         />
 
         {/* Diagram Panel */}
@@ -1249,7 +1642,7 @@ function DiagramViewer() {
           style={{ width: `${100 - splitPosition}%` }}
         >
           {/* Diagram Header */}
-          <div className="flex-shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
+          <div className="shrink-0 px-4 py-2 bg-slate-800 border-b border-slate-700 text-sm text-gray-400 flex items-center justify-between">
             <span>Diagram Preview</span>
             <div className="flex items-center gap-3">
               {loading && <span className="text-cyan-400 text-xs">Rendering...</span>}
@@ -1334,6 +1727,7 @@ function DiagramViewer() {
               'cursor-grab'
             }`}
             onClick={handleCanvasClick}
+            onMouseDown={handleEditMouseDown}
           >
             {/* Show visible error (only when Check is clicked) */}
             {visibleError && (
@@ -1431,10 +1825,10 @@ function DiagramViewer() {
                   }}
                 >
                   <div
-                    dangerouslySetInnerHTML={{ __html: svg }}
-                    className="diagram-container"
+                    ref={svgContainerRef}
+                    className="diagram-container select-none"
                     onClick={handleDiagramClick}
-                    onMouseDown={handleEditMouseDown}
+                    onDoubleClick={handleEditDoubleClick}
                   />
                 </div>
               )}
@@ -1450,7 +1844,7 @@ function DiagramViewer() {
       </div>
 
       {/* Status Bar */}
-      <div className="flex-shrink-0 bg-slate-800 border-t border-slate-700 px-6 py-2">
+      <div className="shrink-0 bg-slate-800 border-t border-slate-700 px-6 py-2">
         <div className="text-sm text-gray-400 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-wrap">
             <span>
@@ -1468,6 +1862,11 @@ function DiagramViewer() {
             </span>
             <span>
               Lines: <span className="text-cyan-400">{source.split('\n').length}</span>
+            </span>
+            {/* DEBUG: Visual click counter and mouse position */}
+            <span className="text-yellow-400 font-bold flex items-center gap-2">
+              <span className={`w-3 h-3 rounded-full ${debugMouseDown ? 'bg-green-500' : 'bg-red-500'}`} />
+              {debugMouseDown ? 'DOWN' : 'UP'} | Clicks: {debugClickCount} | Mouse: {debugMousePos.x}, {debugMousePos.y}
             </span>
             {hasError && (
               <span className="text-amber-400">

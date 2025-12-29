@@ -253,10 +253,10 @@ export interface EditingState {
 
 /** Drag state during active drag operation */
 export interface DragState {
-  type: 'node' | 'waypoint' | 'endpoint'
+  type: 'node' | 'segment'
   targetId: string
-  waypointIndex?: number
-  endpointType?: 'source' | 'target'  // For endpoint drags
+  segmentIndex?: number  // For segment drags: which segment (0 = between points[0] and points[1])
+  segmentOrientation?: 'horizontal' | 'vertical'  // For perpendicular constraint
   startX: number
   startY: number
   currentX: number
