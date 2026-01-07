@@ -25,3 +25,19 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
     monospace;
 }
+
+/* Isometric view styles */
+/* Apply isometric transform to entire ReactFlow viewport */
+/* This ensures nodes, edges, and bounds all transform together consistently */
+.isometric-view .react-flow__viewport {
+  /* Isometric matrix: 30° angles */
+  /* matrix(cos30, sin30, -cos30, sin30, 0, 0) */
+  transform-origin: center center;
+}
+
+/* Apply the isometric transform to the nodes/edges layer */
+.isometric-view .react-flow__nodes,
+.isometric-view .react-flow__edges {
+  transform: matrix(0.866, 0.5, -0.866, 0.5, 0, 0);
+  transform-origin: center center;
+}

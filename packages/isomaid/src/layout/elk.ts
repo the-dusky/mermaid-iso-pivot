@@ -8,6 +8,7 @@
 import ELK, { ElkNode, ElkExtendedEdge } from 'elkjs/lib/elk.bundled.js'
 import type { Graph, Node, GridCoord, Port, PortSide } from '../model/types'
 import { routeEdgesOrthogonal } from './orthogonal-router'
+import { routeEdgesLibavoid, isLibavoidLoaded, type LibavoidRouterOptions } from './libavoid-router'
 import { pixelToGrid, calculateLabelBounds } from '../grid'
 
 export interface LayoutOptions {
@@ -21,14 +22,35 @@ export interface LayoutOptions {
   padding?: number
   /** View mode affects edge gap calculations */
   viewMode?: 'flat' | 'iso'
+  /** Use libavoid for high-quality edge routing (requires WASM to be loaded) */
+  useLibavoid?: boolean
+  /** Options for libavoid router */
+  libavoidOptions?: LibavoidRouterOptions
+  /** Skip edge routing entirely (for ReactFlow dynamic edges) */
+  skipEdgeRouting?: boolean
 }
 
-const DEFAULT_OPTIONS: Required<LayoutOptions> = {
+// Internal type for resolved options (all required except libavoidOptions)
+type ResolvedLayoutOptions = {
+  direction: 'DOWN' | 'UP' | 'RIGHT' | 'LEFT'
+  nodeSpacing: number
+  layerSpacing: number
+  padding: number
+  viewMode: 'flat' | 'iso'
+  useLibavoid: boolean
+  libavoidOptions?: LibavoidRouterOptions
+  skipEdgeRouting: boolean
+}
+
+const DEFAULT_OPTIONS: ResolvedLayoutOptions = {
   direction: 'DOWN',
   nodeSpacing: 120,  // Extra spacing for port offsets + routing clearance
   layerSpacing: 120,
   padding: 30,
   viewMode: 'flat',
+  useLibavoid: false,
+  libavoidOptions: undefined,
+  skipEdgeRouting: false,
 }
 
 /** Calculate base width for a node label */
@@ -231,7 +253,7 @@ function findLowestCommonAncestor(
 /**
  * Convert our Graph to ELK format
  */
-function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
+function graphToElk(graph: Graph, opts: ResolvedLayoutOptions): ElkNode {
   const processedNodes = new Set<string>()
 
   // Calculate uniform width for all regular nodes (consistency across views)
@@ -327,7 +349,7 @@ function graphToElk(graph: Graph, opts: Required<LayoutOptions>): ElkNode {
 /**
  * Apply ELK layout results back to our Graph
  */
-function applyElkLayout(graph: Graph, elkGraph: ElkNode, opts: Required<LayoutOptions>): void {
+function applyElkLayout(graph: Graph, elkGraph: ElkNode, opts: ResolvedLayoutOptions): void {
   const cellSize = graph.config.grid.cellSize
   const fontSize = 14 // Default font size for label bounds
 
@@ -397,8 +419,15 @@ function applyElkLayout(graph: Graph, elkGraph: ElkNode, opts: Required<LayoutOp
     node.ports = generateNodePorts(node, cellSize, portOffset, layerId)
   }
 
-  // Use A* pathfinding for orthogonal edge routing around obstacles
-  routeEdgesOrthogonal(graph, { viewMode: opts.viewMode })
+  // Route edges: skip if skipEdgeRouting is true (for ReactFlow dynamic edges)
+  if (!opts.skipEdgeRouting) {
+    if (opts.useLibavoid && isLibavoidLoaded()) {
+      routeEdgesLibavoid(graph, opts.libavoidOptions)
+    } else {
+      // Fallback to simple orthogonal router
+      routeEdgesOrthogonal(graph, { viewMode: opts.viewMode })
+    }
+  }
 
   // Convert edge points to grid coordinates
   for (const edge of graph.edges) {

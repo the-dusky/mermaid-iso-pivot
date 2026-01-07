@@ -1,3 +1,4 @@
 export { layoutGraph, getGraphBounds, default } from './elk'
 export type { LayoutOptions } from './elk'
 export * from './geofence'
+export * from './libavoid-router'
